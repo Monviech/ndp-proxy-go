@@ -86,6 +86,10 @@
 //   avoid ND leakage across L2 domains. Only multicast or global-scoped
 //   traffic is bridged.
 //
+// - **Bootstrap Router Solicitation:**
+//   On startup, an RS is sent upstream to immediately learn prefixes
+//   instead of waiting up to 600 seconds for the next periodic RA.
+//
 // ----------------------------------------------------------------------
 // COMMAND-LINE USAGE
 // ----------------------------------------------------------------------
@@ -153,12 +157,6 @@ const (
 	ethernetHeaderSize = 14
 	ipv6HeaderSize     = 40
 	icmpv6Offset       = ethernetHeaderSize + ipv6HeaderSize
-
-	// ND message header sizes
-	ndHeaderSizeRS = 8
-	ndHeaderSizeRA = 16
-	ndHeaderSizeNS = 24
-	ndHeaderSizeNA = 24
 
 	// RFC 4861 requirement: Hop Limit must be 255 for ND messages
 	ndHopLimit = 255
@@ -671,8 +669,13 @@ func parseNDPacket(pkt gopacket.Packet) *NDPacket {
 		return nil
 	}
 
-	// Never leak unicast link-local across links
-	if ip6.DstIP.IsLinkLocalUnicast() && !isMulticastEther(eth) && !ip6.DstIP.IsMulticast() {
+	// Never leak unicast link-local across links, except allow Router
+	// Advertisements (can be unicast when solicited via RS)
+	icmpType := uint8(icmp.TypeCode.Type())
+	if ip6.DstIP.IsLinkLocalUnicast() &&
+		!isMulticastEther(eth) &&
+		!ip6.DstIP.IsMulticast() &&
+		icmpType != icmpTypeRouterAdvertisement {
 		return nil
 	}
 
@@ -825,7 +828,7 @@ func buildNA(egress *Port, dstIP net.IP, dstMAC net.HardwareAddr, target net.IP,
 	b[ipv6Offset+0] = 0x60 // Version 6
 	b[ipv6Offset+4] = byte(plen >> 8)
 	b[ipv6Offset+5] = byte(plen)
-	b[ipv6Offset+6] = 58  // Next header ICMPv6
+	b[ipv6Offset+6] = 58 // Next header ICMPv6
 	b[ipv6Offset+7] = ndHopLimit
 	copy(b[ipv6Offset+8:ipv6Offset+24], egress.LLA.To16())
 	copy(b[ipv6Offset+24:ipv6Offset+40], dstIP.To16())
@@ -849,6 +852,59 @@ func buildNA(egress *Port, dstIP net.IP, dstMAC net.HardwareAddr, target net.IP,
 
 	fixChecksum(b)
 	return b
+}
+
+// ============================================================================
+// RS Builder
+// ============================================================================
+
+// sendRouterSolicitation sends a Router Solicitation to trigger an immediate RA.
+func sendRouterSolicitation(port *Port) error {
+	if port == nil || port.HW == nil || port.LLA == nil {
+		return fmt.Errorf("invalid port for RS")
+	}
+
+	// All-routers multicast: ff02::2
+	allRoutersIP := net.ParseIP("ff02::2")
+	// Ethernet MAC for ff02::2 is 33:33:00:00:00:02
+	allRoutersMAC := net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0x02}
+
+	// RS = Eth(14) + IPv6(40) + ICMPv6(8) + SLLA(8) = 70 bytes
+	b := make([]byte, 70)
+
+	// Ethernet header
+	copy(b[0:6], allRoutersMAC)
+	copy(b[6:12], port.HW)
+	b[12], b[13] = 0x86, 0xdd // EtherType IPv6
+
+	// IPv6 header
+	plen := 16             // ICMPv6 RS (8 bytes) + SLLA option (8 bytes)
+	b[ipv6Offset+0] = 0x60 // Version 6
+	b[ipv6Offset+4] = byte(plen >> 8)
+	b[ipv6Offset+5] = byte(plen)
+	b[ipv6Offset+6] = 58 // Next header: ICMPv6
+	b[ipv6Offset+7] = ndHopLimit
+	copy(b[ipv6Offset+8:ipv6Offset+24], port.LLA.To16())
+	copy(b[ipv6Offset+24:ipv6Offset+40], allRoutersIP.To16())
+
+	// ICMPv6 Router Solicitation (type 133)
+	b[icmpv6Offset+0] = icmpTypeRouterSolicitation
+	b[icmpv6Offset+1] = 0 // Code
+	// Checksum at offset+2,3 will be set by fixChecksum
+	// Reserved (4 bytes) already zero
+
+	// SLLA option: type 1, length 1 (8 bytes total)
+	b[icmpv6Offset+8] = ndOptSourceLLA
+	b[icmpv6Offset+9] = 1 // Length in 8-byte units
+	copy(b[icmpv6Offset+10:icmpv6Offset+16], port.HW[:6])
+
+	// Compute ICMPv6 checksum
+	fixChecksum(b)
+
+	// Send the RS
+	port.Write(b, port.HW, allRoutersMAC)
+
+	return nil
 }
 
 // ============================================================================
@@ -1173,6 +1229,14 @@ func main() {
 		up.Name, strings.Join(args[1:], ","), config.NoRA, config.NoRoutes, !config.NoRewrite, config.Debug)
 
 	hub.Start(ctx)
+
+	// Trigger initial Router Solicitation to learn prefixes immediately
+	if up.LLA != nil {
+		log.Printf("ndp-proxy-go: sending Router Solicitation on %s to bootstrap prefix learning", up.Name)
+		if err := sendRouterSolicitation(up); err != nil {
+			log.Printf("ndp-proxy-go: warning - failed to send initial RS: %v", err)
+		}
+	}
 
 	// Graceful shutdown
 	go func() {
