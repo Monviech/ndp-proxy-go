@@ -52,12 +52,12 @@
 //   Certain NS messages are handled locally to maintain isolation:
 //
 //     1. **Router LLA proxying (downstream → upstream):**
-//        When a client sends NS for the router’s link-local address,
+//        When a client sends NS for the router's link-local address,
 //        ndp-proxy-go forges a Neighbor Advertisement (NA) using the
 //        downstream MAC, making the router appear locally reachable.
 //
 //     2. **Client global proxying (upstream → downstream):**
-//        When the upstream router performs NS for a client’s global IPv6
+//        When the upstream router performs NS for a client's global IPv6
 //        address, ndp-proxy-go responds locally with its uplink MAC to
 //        preserve symmetric reachability.
 //
@@ -138,45 +138,130 @@ import (
 	"github.com/google/gopacket/pcap"
 )
 
-var (
-	flagNoRA       = flag.Bool("no-ra", false, "disable forwarding of Router Advertisements (ICMPv6 type 134)")
-	flagNoRoutes   = flag.Bool("no-routes", false, "disable per-host route installation and cleanup")
-	flagAllowDAD   = flag.Bool("no-dad-drop", false, "allow Duplicate Address Detection (DAD) NS upstream")
-	flagNoRewrite  = flag.Bool("no-rewrite-lla", false, "do not rewrite SLLA/TLLA options (unsafe in L2-isolated setups)")
-	flagDebug      = flag.Bool("debug", false, "enable verbose debug logging")
-	flagCacheTTL   = flag.Duration("cache-ttl", 10*time.Minute, "neighbor cache TTL")
-	flagCacheMax   = flag.Int("cache-max", 4096, "max neighbors to track")
-	flagRouteQPS   = flag.Int("route-qps", 50, "max /sbin/route operations per second (rate limited)")
-	flagRouteBurst = flag.Int("route-burst", 50, "burst of route operations allowed before limiting")
+// ============================================================================
+// Constants
+// ============================================================================
+
+const (
+	// ICMPv6 message types per RFC 4861
+	icmpTypeRouterSolicitation    = 133
+	icmpTypeRouterAdvertisement   = 134
+	icmpTypeNeighborSolicitation  = 135
+	icmpTypeNeighborAdvertisement = 136
+
+	// Packet structure offsets (Ethernet frame)
+	ethernetHeaderSize = 14
+	ipv6HeaderSize     = 40
+	icmpv6Offset       = ethernetHeaderSize + ipv6HeaderSize
+
+	// ND message header sizes
+	ndHeaderSizeRS = 8
+	ndHeaderSizeRA = 16
+	ndHeaderSizeNS = 24
+	ndHeaderSizeNA = 24
+
+	// RFC 4861 requirement: Hop Limit must be 255 for ND messages
+	ndHopLimit = 255
+
+	// NA flags (RFC 4861 §4.4)
+	naFlagRouter    = 1 << 7
+	naFlagSolicited = 1 << 6
+	naFlagOverride  = 1 << 5
+
+	// ND option types
+	ndOptSourceLLA  = 1
+	ndOptTargetLLA  = 2
+	ndOptPrefixInfo = 3
 )
 
-func dbg(f string, a ...any) { if *flagDebug { log.Printf(f, a...) } }
+// IPv6 header offset constants
+const (
+	ipv6Offset = ethernetHeaderSize
+)
 
-// ---------- Interfaces / PCAP ----------
+// ============================================================================
+// Utility Functions
+// ============================================================================
 
+// max returns the larger of two integers.
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// ternary returns a if condition is true, otherwise b.
+func ternary[T any](cond bool, a, b T) T {
+	if cond {
+		return a
+	}
+	return b
+}
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+// Config holds runtime configuration parsed from command-line flags.
+type Config struct {
+	NoRA       bool
+	NoRoutes   bool
+	AllowDAD   bool
+	NoRewrite  bool
+	Debug      bool
+	CacheTTL   time.Duration
+	CacheMax   int
+	RouteQPS   int
+	RouteBurst int
+}
+
+// ShouldForwardType returns true if the given ICMPv6 type should be forwarded.
+func (c *Config) ShouldForwardType(icmpType uint8) bool {
+	if icmpType == icmpTypeRouterAdvertisement && c.NoRA {
+		return false
+	}
+	return icmpType >= icmpTypeRouterSolicitation && icmpType <= icmpTypeNeighborAdvertisement
+}
+
+// ParseFlags parses command-line flags and returns a Config.
+func ParseFlags() *Config {
+	cfg := &Config{}
+	flag.BoolVar(&cfg.NoRA, "no-ra", false, "disable forwarding of Router Advertisements (ICMPv6 type 134)")
+	flag.BoolVar(&cfg.NoRoutes, "no-routes", false, "disable per-host route installation and cleanup")
+	flag.BoolVar(&cfg.AllowDAD, "no-dad-drop", false, "allow Duplicate Address Detection (DAD) NS upstream")
+	flag.BoolVar(&cfg.NoRewrite, "no-rewrite-lla", false, "do not rewrite SLLA/TLLA options (unsafe in L2-isolated setups)")
+	flag.BoolVar(&cfg.Debug, "debug", false, "enable verbose debug logging")
+	flag.DurationVar(&cfg.CacheTTL, "cache-ttl", 10*time.Minute, "neighbor cache TTL")
+	flag.IntVar(&cfg.CacheMax, "cache-max", 4096, "max neighbors to track")
+	flag.IntVar(&cfg.RouteQPS, "route-qps", 50, "max /sbin/route operations per second (rate limited)")
+	flag.IntVar(&cfg.RouteBurst, "route-burst", 50, "burst of route operations allowed before limiting")
+	flag.Parse()
+	return cfg
+}
+
+// debugLog logs a message only if debug mode is enabled.
+func (c *Config) debugLog(format string, args ...any) {
+	if c.Debug {
+		log.Printf(format, args...)
+	}
+}
+
+// ============================================================================
+// Port (Network Interface)
+// ============================================================================
+
+// Port represents a network interface with its PCAP handle and addressing info.
 type Port struct {
 	Name string
 	HW   net.HardwareAddr
-	LLA  net.IP // fe80:: on this interface (source for locally generated NA)
+	LLA  net.IP // Link-local address (fe80::) for this interface
 	H    *pcap.Handle
-	wmu  sync.Mutex // serialize pcap writes
+	wmu  sync.Mutex // Serialize PCAP writes
 }
 
-func findLinkLocal(name string) net.IP {
-	ifi, err := net.InterfaceByName(name)
-	if err != nil {
-		return nil
-	}
-	addrs, _ := ifi.Addrs()
-	for _, a := range addrs {
-		if ipn, ok := a.(*net.IPNet); ok && ipn.IP != nil && ipn.IP.To16() != nil && ipn.IP.IsLinkLocalUnicast() {
-			return ipn.IP
-		}
-	}
-	return nil
-}
-
-func openPort(name string) *Port {
+// OpenPort opens a network interface for packet capture with strict ND filtering.
+func OpenPort(name string) *Port {
 	ih, err := pcap.NewInactiveHandle(name)
 	if err != nil {
 		log.Fatalf("pcap inactive %s: %v", name, err)
@@ -192,12 +277,9 @@ func openPort(name string) *Port {
 	if err != nil {
 		log.Fatalf("pcap activate %s: %v", name, err)
 	}
-	// Only receive direction (we hand-craft transmits)
 	_ = h.SetDirection(pcap.DirectionIn)
 
 	// Strict BPF: ICMPv6, HLIM==255, only ND/RA types (133..136).
-	// NOTE: This will not match packets with extension headers in front of ICMPv6.
-	// We intentionally do not support extension header tunneled ICMPv6.
 	filter := "icmp6 and ip6[7]=255 and (ip6[40]=133 or ip6[40]=134 or ip6[40]=135 or ip6[40]=136)"
 	if err := h.SetBPFFilter(filter); err != nil {
 		log.Fatalf("installing BPF on %s failed (%v); refusing broad capture", name, err)
@@ -212,8 +294,9 @@ func openPort(name string) *Port {
 	}
 }
 
-func (p *Port) write(b []byte, src, dst net.HardwareAddr) {
-	if len(b) < 14 {
+// Write sends a packet out this port, optionally rewriting MAC addresses.
+func (p *Port) Write(b []byte, src, dst net.HardwareAddr) {
+	if len(b) < ethernetHeaderSize {
 		return
 	}
 	out := append([]byte(nil), b...)
@@ -228,39 +311,61 @@ func (p *Port) write(b []byte, src, dst net.HardwareAddr) {
 	p.wmu.Unlock()
 }
 
-// ---------- Route worker (FreeBSD /sbin/route wrapper, rate-limited) ----------
+// findLinkLocal returns the link-local IPv6 address for the given interface.
+func findLinkLocal(name string) net.IP {
+	ifi, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil
+	}
+	addrs, _ := ifi.Addrs()
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && ipn.IP != nil && ipn.IP.To16() != nil && ipn.IP.IsLinkLocalUnicast() {
+			return ipn.IP
+		}
+	}
+	return nil
+}
 
+// ============================================================================
+// Route Worker (FreeBSD route management)
+// ============================================================================
+
+// routeOp describes a single route add or delete operation.
 type routeOp struct {
 	add   bool
 	ip    string
 	iface string
 }
 
+// routeWorker manages per-host route operations with rate limiting.
 type routeWorker struct {
 	ch   chan routeOp
-	tok  chan struct{}
+	tok  chan struct{} // Token bucket for rate limiting
 	done chan struct{}
 }
 
+// newRouteWorker creates a rate-limited route worker.
 func newRouteWorker(qps, burst int) *routeWorker {
 	r := &routeWorker{
 		ch:   make(chan routeOp, 4096),
 		tok:  make(chan struct{}, burst),
 		done: make(chan struct{}),
 	}
-	// fill burst tokens
+
+	// Fill initial burst tokens
 	for i := 0; i < burst; i++ {
 		r.tok <- struct{}{}
 	}
-	// refill tokens at qps
+
+	// Token refill goroutine
 	go func() {
-		t := time.NewTicker(time.Second / time.Duration(max(qps, 1)))
-		defer t.Stop()
+		ticker := time.NewTicker(time.Second / time.Duration(max(qps, 1)))
+		defer ticker.Stop()
 		for {
 			select {
 			case <-r.done:
 				return
-			case <-t.C:
+			case <-ticker.C:
 				select {
 				case r.tok <- struct{}{}:
 				default:
@@ -268,14 +373,15 @@ func newRouteWorker(qps, burst int) *routeWorker {
 			}
 		}
 	}()
-	// worker loop
+
+	// Worker goroutine
 	go func() {
 		for {
 			select {
 			case <-r.done:
 				return
 			case op := <-r.ch:
-				<-r.tok
+				<-r.tok // Consume token
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				var cmd *exec.Cmd
 				if op.add {
@@ -286,23 +392,35 @@ func newRouteWorker(qps, burst int) *routeWorker {
 				out, err := cmd.CombinedOutput()
 				cancel()
 				if err != nil {
-					log.Printf("route %s err: %v (out: %s)", tern(op.add, "add", "del"), err, strings.TrimSpace(string(out)))
-				} else {
-					dbg("route %s %s via %s ok", tern(op.add, "add", "del"), op.ip, op.iface)
+					log.Printf("route %s err: %v (out: %s)", ternary(op.add, "add", "del"), err, strings.TrimSpace(string(out)))
 				}
 			}
 		}
 	}()
+
 	return r
 }
-func (r *routeWorker) add(ip, iface string)   { r.ch <- routeOp{add: true, ip: ip, iface: iface} }
-func (r *routeWorker) del(ip string)          { r.ch <- routeOp{add: false, ip: ip} }
-func (r *routeWorker) stop()                  { close(r.done) }
-func max(a, b int) int                        { if a > b { return a }; return b }
-func tern[T any](cond bool, a, b T) T         { if cond { return a }; return b }
 
-// ---------- Neighbor cache & RA prefix learning ----------
+// Add enqueues a route add operation.
+func (r *routeWorker) Add(ip, iface string) {
+	r.ch <- routeOp{add: true, ip: ip, iface: iface}
+}
 
+// Delete enqueues a route delete operation.
+func (r *routeWorker) Delete(ip string) {
+	r.ch <- routeOp{add: false, ip: ip}
+}
+
+// Stop shuts down the route worker.
+func (r *routeWorker) Stop() {
+	close(r.done)
+}
+
+// ============================================================================
+// Neighbor Cache
+// ============================================================================
+
+// Neighbor represents a learned IPv6 neighbor.
 type Neighbor struct {
 	MAC  net.HardwareAddr
 	Port int
@@ -310,70 +428,78 @@ type Neighbor struct {
 	Exp  time.Time
 }
 
+// Cache tracks learned neighbors with expiry and optional route management.
 type Cache struct {
-	mu    sync.RWMutex
-	m     map[string]Neighbor
-	ttl   time.Duration
-	max   int
-	allow *prefixDB
-	rt    *routeWorker
-	noRt  bool
+	mu     sync.RWMutex
+	m      map[string]Neighbor
+	ttl    time.Duration
+	max    int
+	allow  *PrefixDB
+	rt     *routeWorker
+	noRt   bool
+	config *Config
 }
 
+// NewCache creates a new neighbor cache.
+func NewCache(config *Config, allow *PrefixDB, rt *routeWorker) *Cache {
+	return &Cache{
+		m:      make(map[string]Neighbor),
+		ttl:    config.CacheTTL,
+		max:    config.CacheMax,
+		allow:  allow,
+		rt:     rt,
+		noRt:   config.NoRoutes,
+		config: config,
+	}
+}
+
+// Learn records a neighbor discovery, optionally installing a route.
 func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
-    // Sanity and scope checks
-    if ip == nil || mac == nil || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
-        return
-    }
-    if ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
-        return
-    }
-    if c.allow != nil && !c.allow.Contains(ip) {
-        dbg("skip learn %s (not in allowed RA prefixes)", ip)
-        return
-    }
+	// Sanity and scope checks
+	if ip == nil || mac == nil || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+		return
+	}
+	if ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
+		return
+	}
+	if c.allow != nil && !c.allow.Contains(ip) {
+		c.config.debugLog("skip learn %s (not in allowed RA prefixes)", ip)
+		return
+	}
 
-    k := ip.String()
-    now := time.Now()
-    expire := now.Add(c.ttl)
+	k := ip.String()
+	now := time.Now()
+	expire := now.Add(c.ttl)
 
-    c.mu.Lock()
-    if c.m == nil {
-        c.m = make(map[string]Neighbor)
-    }
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-    // If entry already exists and still valid, just refresh expiry
-    if old, ok := c.m[k]; ok {
-        if now.Before(old.Exp) {
-            // refresh expiry but don't re-add route
-            old.Exp = expire
-            c.m[k] = old
-            c.mu.Unlock()
-            dbg("refreshed %s on %s (port %d)", k, ifn, port)
-            return
-        }
-        // expired — replace below
-    }
+	// If entry exists and still valid, just refresh expiry
+	if old, ok := c.m[k]; ok && now.Before(old.Exp) {
+		old.Exp = expire
+		c.m[k] = old
+		c.config.debugLog("refreshed %s on %s (port %d)", k, ifn, port)
+		return
+	}
 
-    // Enforce max neighbor cap
-    if c.max > 0 && len(c.m) >= c.max {
-        c.mu.Unlock()
-        dbg("cache full, skipping learn for %s", k)
-        return
-    }
+	// Enforce max neighbor cap
+	if c.max > 0 && len(c.m) >= c.max {
+		c.config.debugLog("cache full, skipping learn for %s", k)
+		return
+	}
 
-    // Insert or replace
-    c.m[k] = Neighbor{MAC: mac, Port: port, If: ifn, Exp: expire}
-    c.mu.Unlock()
+	// Insert or replace
+	c.m[k] = Neighbor{MAC: mac, Port: port, If: ifn, Exp: expire}
 
-    // Add per-host route once (asynchronously)
-    if !c.noRt {
-        c.rt.add(k, ifn)
-    }
+	// Add per-host route asynchronously
+	if !c.noRt {
+		c.rt.Add(k, ifn)
+	}
 
-    dbg("learned %s on %s (port %d)", k, ifn, port)
+	c.config.debugLog("learned %s on %s (port %d)", k, ifn, port)
 }
 
+// Lookup retrieves a neighbor by IP address.
 func (c *Cache) Lookup(ip net.IP) (Neighbor, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -381,54 +507,65 @@ func (c *Cache) Lookup(ip net.IP) (Neighbor, bool) {
 	return n, ok
 }
 
+// Sweep removes expired neighbors.
 func (c *Cache) Sweep() {
-	if c.m == nil {
-		return
-	}
 	now := time.Now()
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	for ip, n := range c.m {
 		if now.After(n.Exp) {
 			delete(c.m, ip)
 			if !c.noRt {
-				c.rt.del(ip)
+				c.rt.Delete(ip)
 			}
 		}
 	}
-	c.mu.Unlock()
 }
 
+// CleanupAll removes all installed routes (called on shutdown).
 func (c *Cache) CleanupAll() {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if c.m == nil || c.noRt {
+	if c.noRt {
 		return
 	}
 	for ip := range c.m {
-		c.rt.del(ip)
+		c.rt.Delete(ip)
 	}
 }
 
-// prefixDB tracks allowed global prefixes learned from RA PI options.
-// Each prefix has its own expiry (ValidLifetime).
-type prefixDB struct {
-	mu sync.RWMutex
-	m  map[string]time.Time // CIDR -> expiry
+// ============================================================================
+// Prefix Database (RA prefix tracking)
+// ============================================================================
+
+// PrefixDB tracks allowed global prefixes learned from RA Prefix Info options.
+type PrefixDB struct {
+	mu     sync.RWMutex
+	m      map[string]time.Time // CIDR -> expiry
+	config *Config
 }
 
-func newPrefixDB() *prefixDB { return &prefixDB{m: make(map[string]time.Time)} }
+// NewPrefixDB creates a new prefix database.
+func NewPrefixDB(config *Config) *PrefixDB {
+	return &PrefixDB{
+		m:      make(map[string]time.Time),
+		config: config,
+	}
+}
 
-func (p *prefixDB) Add(prefix *net.IPNet, valid time.Duration) {
+// Add registers a prefix with its ValidLifetime.
+func (p *PrefixDB) Add(prefix *net.IPNet, valid time.Duration) {
 	if prefix == nil || valid <= 0 {
 		return
 	}
 	p.mu.Lock()
 	p.m[prefix.String()] = time.Now().Add(valid)
 	p.mu.Unlock()
-	dbg("RA prefix learned: %s (valid %s)", prefix, valid)
+	p.config.debugLog("RA prefix learned: %s (valid %s)", prefix, valid)
 }
 
-func (p *prefixDB) Contains(ip net.IP) bool {
+// Contains checks if an IP is within any valid prefix.
+func (p *PrefixDB) Contains(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
@@ -447,25 +584,30 @@ func (p *prefixDB) Contains(ip net.IP) bool {
 	return false
 }
 
-func (p *prefixDB) Sweep() {
+// Sweep removes expired prefixes.
+func (p *PrefixDB) Sweep() {
 	now := time.Now()
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	for cidr, exp := range p.m {
 		if now.After(exp) {
 			delete(p.m, cidr)
 		}
 	}
-	p.mu.Unlock()
 }
 
-// ---------- Dedup tiny window ----------
+// ============================================================================
+// Deduplication Cache
+// ============================================================================
 
+// DedupCache provides a short-lived deduplication window for forwarded packets.
 type DedupCache struct {
 	mu  sync.Mutex
 	m   map[string]time.Time
 	ttl time.Duration
 }
 
+// Seen returns true if the key was recently seen (within TTL).
 func (d *DedupCache) Seen(key string) bool {
 	now := time.Now()
 	d.mu.Lock()
@@ -481,76 +623,346 @@ func (d *DedupCache) Seen(key string) bool {
 	return false
 }
 
+// Sweep removes stale dedup entries.
 func (d *DedupCache) Sweep() {
 	limit := time.Now().Add(-d.ttl)
 	d.mu.Lock()
+	defer d.mu.Unlock()
 	for k, t := range d.m {
 		if t.Before(limit) {
 			delete(d.m, k)
 		}
 	}
-	d.mu.Unlock()
 }
 
-// ---------- Hub: main logic ----------
+// ============================================================================
+// ND Packet Abstraction
+// ============================================================================
 
+// NDPacket wraps a parsed ND/RA packet with helper methods.
+type NDPacket struct {
+	raw    []byte
+	eth    *layers.Ethernet
+	ipv6   *layers.IPv6
+	icmpv6 *layers.ICMPv6
+}
+
+// parseNDPacket validates and parses an ND packet from gopacket.
+func parseNDPacket(pkt gopacket.Packet) *NDPacket {
+	ethL := pkt.Layer(layers.LayerTypeEthernet)
+	ip6L := pkt.Layer(layers.LayerTypeIPv6)
+	icmpL := pkt.Layer(layers.LayerTypeICMPv6)
+
+	if ethL == nil || ip6L == nil || icmpL == nil {
+		return nil
+	}
+
+	eth := ethL.(*layers.Ethernet)
+	ip6 := ip6L.(*layers.IPv6)
+	icmp := icmpL.(*layers.ICMPv6)
+
+	// Enforce HLIM=255 per RFC 4861
+	if ip6.HopLimit != ndHopLimit {
+		return nil
+	}
+
+	// No extension headers allowed
+	if ip6.NextHeader != layers.IPProtocolICMPv6 {
+		return nil
+	}
+
+	// Never leak unicast link-local across links
+	if ip6.DstIP.IsLinkLocalUnicast() && !isMulticastEther(eth) && !ip6.DstIP.IsMulticast() {
+		return nil
+	}
+
+	return &NDPacket{
+		raw:    pkt.Data(),
+		eth:    eth,
+		ipv6:   ip6,
+		icmpv6: icmp,
+	}
+}
+
+// Type returns the ICMPv6 type.
+func (p *NDPacket) Type() uint8 {
+	return uint8(p.icmpv6.TypeCode.Type())
+}
+
+// Target extracts the target address from NS/NA messages.
+func (p *NDPacket) Target() net.IP {
+	if len(p.raw) < icmpv6Offset+24 {
+		return nil
+	}
+	t := p.Type()
+	if t != icmpTypeNeighborSolicitation && t != icmpTypeNeighborAdvertisement {
+		return nil
+	}
+	return net.IP(append([]byte{}, p.raw[icmpv6Offset+8:icmpv6Offset+24]...))
+}
+
+// IsDAD returns true if this is a DAD probe (NS with unspecified source).
+func (p *NDPacket) IsDAD() bool {
+	return p.Type() == icmpTypeNeighborSolicitation && p.ipv6.SrcIP.IsUnspecified()
+}
+
+// IsMulticast returns true if this packet is multicast (Ethernet or IPv6).
+func (p *NDPacket) IsMulticast() bool {
+	return isMulticastEther(p.eth) || p.ipv6.DstIP.IsMulticast()
+}
+
+// RAPrefix represents a prefix learned from RA.
+type RAPrefix struct {
+	Net   *net.IPNet
+	Valid time.Duration
+}
+
+// ParseRAPrefixes extracts prefix information options from an RA.
+func (p *NDPacket) ParseRAPrefixes() []RAPrefix {
+	out := []RAPrefix{}
+	if len(p.raw) < icmpv6Offset+16 || p.Type() != icmpTypeRouterAdvertisement {
+		return out
+	}
+
+	plen := int(p.raw[ipv6Offset+4])<<8 | int(p.raw[ipv6Offset+5])
+	optStart := icmpv6Offset + 16
+	optEnd := ipv6Offset + 40 + plen
+	if optEnd > len(p.raw) {
+		optEnd = len(p.raw)
+	}
+
+	for i := optStart; i+2 <= optEnd; {
+		t := p.raw[i]
+		l := int(p.raw[i+1]) * 8
+		if l <= 0 || i+l > optEnd {
+			break
+		}
+		if t == ndOptPrefixInfo && l >= 32 {
+			pfxLen := int(p.raw[i+2])
+			valid := binary.BigEndian.Uint32(p.raw[i+4 : i+8])
+			pfx := net.IP(append([]byte{}, p.raw[i+16:i+32]...))
+			if pfx.To16() != nil && pfxLen >= 0 && pfxLen <= 128 {
+				mask := net.CIDRMask(pfxLen, 128)
+				network := pfx.Mask(mask)
+				_, n, _ := net.ParseCIDR(fmt.Sprintf("%s/%d", network, pfxLen))
+				if n != nil && valid > 0 {
+					out = append(out, RAPrefix{
+						Net:   n,
+						Valid: time.Duration(valid) * time.Second,
+					})
+				}
+			}
+		}
+		i += l
+	}
+	return out
+}
+
+// Sanitize normalizes the packet: HLIM=255, rewrite LLA options, recompute checksum.
+func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
+	out := append([]byte(nil), p.raw...)
+	if len(out) < icmpv6Offset+4 {
+		return out
+	}
+
+	// Force HLIM=255
+	out[ipv6Offset+7] = ndHopLimit
+
+	// Optionally rewrite SLLA/TLLA
+	if rewriteOpts && len(egress.HW) >= 6 {
+		optStart := icmpv6Offset
+		switch p.Type() {
+		case icmpTypeRouterAdvertisement:
+			optStart += 16
+		case icmpTypeNeighborSolicitation, icmpTypeNeighborAdvertisement:
+			optStart += 24
+		default:
+			return out
+		}
+
+		plen := int(out[ipv6Offset+4])<<8 | int(out[ipv6Offset+5])
+		optEnd := ipv6Offset + 40 + plen
+		if optEnd > len(out) {
+			optEnd = len(out)
+		}
+
+		for i := optStart; i+2 <= optEnd; {
+			l := int(out[i+1]) * 8
+			if l <= 0 || i+l > optEnd {
+				break
+			}
+			if (out[i] == ndOptSourceLLA || out[i] == ndOptTargetLLA) && l >= 8 {
+				copy(out[i+2:i+8], egress.HW[:6])
+			}
+			i += l
+		}
+	}
+
+	fixChecksum(out)
+	return out
+}
+
+// ============================================================================
+// NA Builder
+// ============================================================================
+
+// buildNA constructs a unicast Neighbor Advertisement.
+func buildNA(egress *Port, dstIP net.IP, dstMAC net.HardwareAddr, target net.IP, setRouter bool) []byte {
+	if egress == nil || egress.HW == nil || egress.LLA == nil || dstIP == nil || dstMAC == nil || target == nil {
+		return nil
+	}
+
+	// Eth(14) + IPv6(40) + ICMPv6 NA(24) + TLLA(8) = 86
+	b := make([]byte, 86)
+
+	// Ethernet
+	copy(b[0:6], dstMAC)
+	copy(b[6:12], egress.HW)
+	b[12], b[13] = 0x86, 0xdd
+
+	// IPv6
+	plen := 24 + 8
+	b[ipv6Offset+0] = 0x60 // Version 6
+	b[ipv6Offset+4] = byte(plen >> 8)
+	b[ipv6Offset+5] = byte(plen)
+	b[ipv6Offset+6] = 58  // Next header ICMPv6
+	b[ipv6Offset+7] = ndHopLimit
+	copy(b[ipv6Offset+8:ipv6Offset+24], egress.LLA.To16())
+	copy(b[ipv6Offset+24:ipv6Offset+40], dstIP.To16())
+
+	// ICMPv6 NA
+	b[icmpv6Offset+0] = icmpTypeNeighborAdvertisement
+	// Code = 0
+	flags := byte(0)
+	if setRouter {
+		flags |= naFlagRouter
+	}
+	flags |= naFlagSolicited
+	flags |= naFlagOverride
+	b[icmpv6Offset+4] = flags
+	copy(b[icmpv6Offset+8:icmpv6Offset+24], target.To16())
+
+	// TLLA option: type 2, len 1 (8 bytes), value = MAC(6)
+	b[icmpv6Offset+24] = ndOptTargetLLA
+	b[icmpv6Offset+25] = 1
+	copy(b[icmpv6Offset+26:icmpv6Offset+32], egress.HW[:6])
+
+	fixChecksum(b)
+	return b
+}
+
+// ============================================================================
+// Checksum Utilities
+// ============================================================================
+
+// fixChecksum recomputes the ICMPv6 checksum for a packet.
+func fixChecksum(b []byte) {
+	if len(b) < icmpv6Offset+4 || len(b) < ipv6Offset+40 {
+		return
+	}
+
+	// Zero checksum field
+	b[icmpv6Offset+2], b[icmpv6Offset+3] = 0, 0
+
+	plen := int(b[ipv6Offset+4])<<8 | int(b[ipv6Offset+5])
+	end := icmpv6Offset + plen
+	if end > len(b) {
+		end = len(b)
+	}
+
+	sum := uint32(0)
+
+	// Helper to add 16-bit words
+	add16 := func(start, n int) {
+		for i := 0; i+1 < n; i += 2 {
+			sum += uint32(uint16(b[start+i])<<8 | uint16(b[start+i+1]))
+		}
+	}
+
+	// IPv6 pseudo-header: src + dst + length + next header
+	add16(ipv6Offset+8, 32)
+	sum += uint32(plen)
+	sum += uint32(58) // ICMPv6
+
+	// ICMPv6 body
+	for i := icmpv6Offset; i+1 < end; i += 2 {
+		sum += uint32(uint16(b[i])<<8 | uint16(b[i+1]))
+	}
+	if ((end - icmpv6Offset) & 1) == 1 {
+		sum += uint32(uint16(b[end-1]) << 8)
+	}
+
+	// Fold carries
+	for (sum >> 16) != 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	csum := ^uint16(sum & 0xffff)
+	b[icmpv6Offset+2], b[icmpv6Offset+3] = byte(csum>>8), byte(csum)
+}
+
+// isMulticastEther returns true if the Ethernet destination is multicast.
+func isMulticastEther(e *layers.Ethernet) bool {
+	return len(e.DstMAC) > 0 && (e.DstMAC[0]&1) == 1
+}
+
+// ============================================================================
+// Hub (Main forwarding logic)
+// ============================================================================
+
+// Hub manages packet forwarding between upstream and downstream ports.
 type Hub struct {
-	Up   *Port
-	Down []*Port
-	C    *Cache
-	Dup  *DedupCache
+	Up     *Port
+	Down   []*Port
+	Cache  *Cache
+	Dedup  *DedupCache
+	Config *Config
 
 	muRouter  sync.RWMutex
-	routerLLA map[string]struct{} // learned from RA source address
-	pdb       *prefixDB           // RA-learned allowed global prefixes
+	routerLLA map[string]struct{} // Learned from RA source addresses
+	prefixDB  *PrefixDB
 
 	wg sync.WaitGroup
 }
 
-func (h *Hub) rememberRouterLLA(ip net.IP) {
-	if ip == nil || !ip.IsLinkLocalUnicast() {
-		return
+// NewHub creates a new forwarding hub.
+func NewHub(up *Port, down []*Port, cache *Cache, prefixDB *PrefixDB, config *Config) *Hub {
+	return &Hub{
+		Up:        up,
+		Down:      down,
+		Cache:     cache,
+		Dedup:     &DedupCache{},
+		Config:    config,
+		routerLLA: make(map[string]struct{}),
+		prefixDB:  prefixDB,
 	}
-	h.muRouter.Lock()
-	if h.routerLLA == nil {
-		h.routerLLA = make(map[string]struct{})
-	}
-	h.routerLLA[ip.String()] = struct{}{}
-	h.muRouter.Unlock()
-	dbg("router LLA learned: %s", ip)
-}
-func (h *Hub) isRouterLLA(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	h.muRouter.RLock()
-	_, ok := h.routerLLA[ip.String()]
-	h.muRouter.RUnlock()
-	return ok
 }
 
+// Start begins forwarding packets in both directions.
 func (h *Hub) Start(ctx context.Context) {
-	// down→up per downlink
+	// Downstream → Upstream (one goroutine per downlink)
 	for i := range h.Down {
 		h.wg.Add(1)
 		go func(idx int) {
 			defer h.wg.Done()
-			h.forward(ctx, h.Down[idx], []*Port{h.Up}, false, idx)
+			h.forwardDownToUp(ctx, h.Down[idx], idx)
 		}(i)
 	}
-	// up→down (single loop)
+
+	// Upstream → Downstream (single goroutine)
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		h.forward(ctx, h.Up, h.Down, true, -1)
+		h.forwardUpToDown(ctx)
 	}()
 }
 
-func (h *Hub) Wait() { h.wg.Wait() }
+// Wait blocks until all forwarding goroutines exit.
+func (h *Hub) Wait() {
+	h.wg.Wait()
+}
 
-// forward handles both directions.
-// up==true -> upToDown (router to clients). up==false -> downToUp (clients to router).
-func (h *Hub) forward(ctx context.Context, src *Port, dsts []*Port, up bool, idx int) {
+// forwardDownToUp handles client → router traffic.
+func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 	ps := gopacket.NewPacketSource(src.H, src.H.LinkType())
 	ps.NoCopy = true
 
@@ -563,405 +975,217 @@ func (h *Hub) forward(ctx context.Context, src *Port, dsts []*Port, up bool, idx
 				return
 			}
 
-			ethL := pkt.Layer(layers.LayerTypeEthernet)
-			ip6L := pkt.Layer(layers.LayerTypeIPv6)
-			icmpL := pkt.Layer(layers.LayerTypeICMPv6)
-
-			if ethL == nil || ip6L == nil || icmpL == nil {
-				continue
-			}
-			eth := ethL.(*layers.Ethernet)
-			ip6 := ip6L.(*layers.IPv6)
-			icmp := icmpL.(*layers.ICMPv6)
-
-			// Enforce link-local only ND reception: HLIM must be 255
-			if ip6.HopLimit != 255 {
-				continue
-			}
-			// We intentionally do not support IPv6 ext headers ahead of ICMPv6.
-			// Reject if NextHeader != ICMPv6
-			if ip6.NextHeader != layers.IPProtocolICMPv6 {
+			ndPkt := parseNDPacket(pkt)
+			if ndPkt == nil {
 				continue
 			}
 
-			t := icmp.TypeCode.Type()
-
-			// Never leak unicast link-local across links (safety)
-			if ip6.DstIP.IsLinkLocalUnicast() && !isMulticastEther(eth) && !ip6.DstIP.IsMulticast() {
+			// Check deduplication
+			key := fmt.Sprintf("d2u:%s>%s:%d", ndPkt.ipv6.SrcIP, ndPkt.ipv6.DstIP, ndPkt.Type())
+			if h.Dedup.Seen(key) {
 				continue
 			}
 
-			if !shouldForward(t) {
+			// Learn source (skip DAD probes)
+			if !ndPkt.IsDAD() {
+				h.Cache.Learn(ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, idx, src.Name)
+			}
+
+			// Drop DAD NS upstream unless explicitly allowed
+			if ndPkt.IsDAD() && !h.Config.AllowDAD {
 				continue
 			}
 
-			key := fmt.Sprintf("%t:%s>%s:%d", up, ip6.SrcIP, ip6.DstIP, t)
-			if h.Dup.Seen(key) {
-				continue
-			}
-
-			raw := pkt.Data()
-
-			if !up {
-				// learning path (down→up)
-				// Skip learns for DAD probes (::/128)
-				if !(t == 135 && ip6.SrcIP.IsUnspecified()) {
-					h.C.Learn(ip6.SrcIP, eth.SrcMAC, idx, src.Name)
-				}
-				// Drop DAD NS upstream unless explicitly allowed
-				if t == 135 && ip6.SrcIP.IsUnspecified() && !*flagAllowDAD {
-					continue
-				}
-				// Proxy router LLA locally (NS for router's fe80:: target)
-				if t == 135 {
-					if tgt := ndTarget(raw); tgt != nil && h.isRouterLLA(tgt) {
-						if na := buildNA(src, ip6.SrcIP, eth.SrcMAC, tgt, true); na != nil {
-							src.write(na, src.HW, eth.SrcMAC)
-							dbg("proxied NA (router LLA %s) -> %s on %s", tgt, ip6.SrcIP, src.Name)
-							continue
-						}
+			// Proxy router LLA locally (NS for router's fe80:: target)
+			if ndPkt.Type() == icmpTypeNeighborSolicitation {
+				if tgt := ndPkt.Target(); tgt != nil && h.isRouterLLA(tgt) {
+					if na := buildNA(src, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, true); na != nil {
+						src.Write(na, src.HW, ndPkt.eth.SrcMAC)
+						h.Config.debugLog("proxied NA (router LLA %s) -> %s on %s", tgt, ndPkt.ipv6.SrcIP, src.Name)
+						continue
 					}
 				}
-				// Forward to upstream
-				buf := sanitizeND(raw, h.Up.HW, h.Up.LLA, uint8(t), !*flagNoRewrite)
-				h.Up.write(buf, h.Up.HW, nil)
+			}
+
+			// Forward to upstream
+			buf := ndPkt.Sanitize(h.Up, !h.Config.NoRewrite)
+			h.Up.Write(buf, h.Up.HW, nil)
+		}
+	}
+}
+
+// forwardUpToDown handles router → client traffic.
+func (h *Hub) forwardUpToDown(ctx context.Context) {
+	ps := gopacket.NewPacketSource(h.Up.H, h.Up.H.LinkType())
+	ps.NoCopy = true
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case pkt, ok := <-ps.Packets():
+			if !ok {
+				return
+			}
+
+			ndPkt := parseNDPacket(pkt)
+			if ndPkt == nil || !h.Config.ShouldForwardType(ndPkt.Type()) {
 				continue
 			}
 
-			// up → down
-			if t == 134 && !*flagNoRA {
-				// RA: remember router LLA (src), and learn PI prefixes
-				h.rememberRouterLLA(ip6.SrcIP)
-				for _, pi := range parseRAprefixes(raw) {
-					h.pdb.Add(pi.Net, pi.Valid)
+			// Check deduplication
+			key := fmt.Sprintf("u2d:%s>%s:%d", ndPkt.ipv6.SrcIP, ndPkt.ipv6.DstIP, ndPkt.Type())
+			if h.Dedup.Seen(key) {
+				continue
+			}
+
+			// RA: learn router LLA and prefixes
+			if ndPkt.Type() == icmpTypeRouterAdvertisement {
+				h.rememberRouterLLA(ndPkt.ipv6.SrcIP)
+				for _, pi := range ndPkt.ParseRAPrefixes() {
+					h.prefixDB.Add(pi.Net, pi.Valid)
 				}
 			}
 
 			// Proxy client global NA locally on uplink
-			if t == 135 {
-				if tgt := ndTarget(raw); tgt != nil && !tgt.IsLinkLocalUnicast() {
-					if n, ok := h.C.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(dsts) {
-						if na := buildNA(h.Up, ip6.SrcIP, eth.SrcMAC, tgt, false); na != nil {
-							h.Up.write(na, h.Up.HW, eth.SrcMAC)
-							dbg("proxied NA (client %s) -> %s on %s", tgt, ip6.SrcIP, h.Up.Name)
+			if ndPkt.Type() == icmpTypeNeighborSolicitation {
+				if tgt := ndPkt.Target(); tgt != nil && !tgt.IsLinkLocalUnicast() {
+					if n, ok := h.Cache.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(h.Down) {
+						if na := buildNA(h.Up, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, false); na != nil {
+							h.Up.Write(na, h.Up.HW, ndPkt.eth.SrcMAC)
+							h.Config.debugLog("proxied NA (client %s) -> %s on %s", tgt, ndPkt.ipv6.SrcIP, h.Up.Name)
 							continue
 						}
 					}
 				}
 			}
 
-			isMcast := isMulticastEther(eth) || ip6.DstIP.IsMulticast()
-			if isMcast {
-				for _, d := range dsts {
-					buf := sanitizeND(raw, d.HW, d.LLA, uint8(t), !*flagNoRewrite)
-					d.write(buf, d.HW, nil)
+			// Forward to downstream port(s)
+			if ndPkt.IsMulticast() {
+				// Multicast: broadcast to all downlinks
+				for _, d := range h.Down {
+					buf := ndPkt.Sanitize(d, !h.Config.NoRewrite)
+					d.Write(buf, d.HW, nil)
 				}
-				continue
-			}
-
-			// Unicast case: targeted neighbor if known, else limited flood
-			if n, ok := h.C.Lookup(ip6.DstIP); ok && n.Port >= 0 && n.Port < len(dsts) {
-				d := dsts[n.Port]
-				buf := sanitizeND(raw, d.HW, d.LLA, uint8(t), !*flagNoRewrite)
-				d.write(buf, d.HW, n.MAC)
 			} else {
-				// limited flood (downlinks only), small fan-out
-				for i, d := range dsts {
-					if i >= 8 { // cap to avoid amplification
-						break
+				// Unicast: targeted delivery or limited flood
+				if n, ok := h.Cache.Lookup(ndPkt.ipv6.DstIP); ok && n.Port >= 0 && n.Port < len(h.Down) {
+					d := h.Down[n.Port]
+					buf := ndPkt.Sanitize(d, !h.Config.NoRewrite)
+					d.Write(buf, d.HW, n.MAC)
+				} else {
+					// Limited flood (cap to 8 ports to avoid amplification)
+					for i, d := range h.Down {
+						if i >= 8 {
+							break
+						}
+						buf := ndPkt.Sanitize(d, !h.Config.NoRewrite)
+						d.Write(buf, d.HW, nil)
 					}
-					buf := sanitizeND(raw, d.HW, d.LLA, uint8(t), !*flagNoRewrite)
-					d.write(buf, d.HW, nil)
 				}
 			}
 		}
 	}
 }
 
-// ---------- Helpers & ND/RA parsing ----------
-
-func isMulticastEther(e *layers.Ethernet) bool {
-	return len(e.DstMAC) > 0 && (e.DstMAC[0]&1) == 1
-}
-
-func shouldForward(t uint8) bool {
-	return t == 133 || t == 135 || t == 136 || (t == 134 && !*flagNoRA)
-}
-
-// We keep two small fixed offsets for checksum/option walking only after
-// we already accepted IPv6/ICMPv6 via gopacket and HLIM==255 and NextHeader==ICMPv6.
-const (
-	ip6off  = 14
-	icmpoff = 14 + 40
-)
-
-// ndTarget extracts NS/NA target at a fixed offset (valid since we reject ext headers).
-func ndTarget(b []byte) net.IP {
-	if len(b) < icmpoff+24 {
-		return nil
-	}
-	t := b[icmpoff+0]
-	if t != 135 && t != 136 {
-		return nil
-	}
-	return net.IP(append([]byte{}, b[icmpoff+8:icmpoff+24]...))
-}
-
-type raPrefix struct {
-	Net   *net.IPNet
-	Valid time.Duration // ValidLifetime
-}
-
-// parseRAprefixes walks RA options and extracts PI (type 3) with ValidLifetime.
-func parseRAprefixes(b []byte) []raPrefix {
-	out := []raPrefix{}
-	if len(b) < icmpoff+16 || b[icmpoff+0] != 134 {
-		return out
-	}
-	plen := int(b[ip6off+4])<<8 | int(b[ip6off+5])
-	optStart := icmpoff + 16 // RA header is 16 bytes
-	optEnd := ip6off + 40 + plen
-	if optEnd > len(b) {
-		optEnd = len(b)
-	}
-	for i := optStart; i+2 <= optEnd; {
-		t := b[i]
-		l := int(b[i+1]) * 8
-		if l <= 0 || i+l > optEnd {
-			break
-		}
-		if t == 3 && l >= 32 {
-			pfxLen := int(b[i+2])
-			// Flags := b[i+3] (A/L bits) — not required for allow-listing
-			valid := binary.BigEndian.Uint32(b[i+4 : i+8])
-			// preferred := binary.BigEndian.Uint32(b[i+8 : i+12])
-			pfx := net.IP(append([]byte{}, b[i+16:i+32]...))
-			if pfx.To16() != nil && pfxLen >= 0 && pfxLen <= 128 {
-				mask := net.CIDRMask(pfxLen, 128)
-				network := pfx.Mask(mask)
-				_, n, _ := net.ParseCIDR(fmt.Sprintf("%s/%d", network, pfxLen))
-				if n != nil && valid > 0 {
-					out = append(out, raPrefix{
-						Net:   n,
-						Valid: time.Duration(valid) * time.Second,
-					})
-				}
-			}
-		}
-		i += l
-	}
-	return out
-}
-
-// sanitizeND: force HLIM=255; optionally rewrite S/T-LLA MACs to egress MAC; recompute checksum.
-func sanitizeND(b []byte, egressMAC net.HardwareAddr, egressLL net.IP, icmpType uint8, rewriteOpts bool) []byte {
-	out := append([]byte(nil), b...)
-	if len(out) < icmpoff+4 {
-		return out
-	}
-	// Hop Limit
-	out[ip6off+7] = 255
-
-	// Optionally rewrite SLLA/TLLA
-	if rewriteOpts && len(egressMAC) >= 6 {
-		optStart := icmpoff
-		switch icmpType {
-		case 134:
-			optStart += 16
-		case 135, 136:
-			optStart += 24
-		default:
-			return out
-		}
-		plen := int(out[ip6off+4])<<8 | int(out[ip6off+5])
-		optEnd := ip6off + 40 + plen
-		if optEnd > len(out) {
-			optEnd = len(out)
-		}
-		for i := optStart; i+2 <= optEnd; {
-			l := int(out[i+1]) * 8
-			if l <= 0 || i+l > optEnd {
-				break
-			}
-			if (out[i] == 1 || out[i] == 2) && l >= 8 && (l%8 == 0) {
-				copy(out[i+2:i+8], egressMAC[:6])
-			}
-			i += l
-		}
-	}
-
-	fixChecksumSimple(out)
-	return out
-}
-
-// Build a unicast NA toward dstIP/dstMAC using egress port.
-// Flags: Router (bit7) optionally set; Solicited+Override always set.
-func buildNA(eg *Port, dstIP net.IP, dstMAC net.HardwareAddr, target net.IP, setRouter bool) []byte {
-	if eg == nil || eg.HW == nil || eg.LLA == nil || dstIP == nil || dstMAC == nil || target == nil {
-		return nil
-	}
-	// Eth(14)+IPv6(40)+ICMPv6 NA(24)+TLLA(8)=86
-	b := make([]byte, 14+40+24+8)
-
-	// Ethernet
-	copy(b[0:6], dstMAC) // dst
-	copy(b[6:12], eg.HW) // src
-	b[12], b[13] = 0x86, 0xdd
-
-	// IPv6
-	plen := 24 + 8
-	b[ip6off+0] = 0x60 // Version 6
-	b[ip6off+4] = byte(plen >> 8)
-	b[ip6off+5] = byte(plen)
-	b[ip6off+6] = 58  // next header ICMPv6
-	b[ip6off+7] = 255 // HLIM
-	copy(b[ip6off+8:ip6off+24], eg.LLA.To16())
-	copy(b[ip6off+24:ip6off+40], dstIP.To16())
-
-	// ICMPv6 NA
-	b[icmpoff+0] = 136 // Type
-	// Code = 0
-	flags := byte(0)
-	if setRouter {
-		flags |= 1 << 7
-	}
-	flags |= 1 << 6 // Solicited
-	flags |= 1 << 5 // Override
-	b[icmpoff+4] = flags
-	copy(b[icmpoff+8:icmpoff+24], target.To16())
-
-	// TLLA option: type 2, len 1 (8 bytes), value = MAC(6)
-	b[icmpoff+24] = 2
-	b[icmpoff+25] = 1
-	copy(b[icmpoff+26:icmpoff+32], eg.HW[:6])
-
-	fixChecksumSimple(b)
-	return b
-}
-
-// fixChecksumSimple recomputes ICMPv6 checksum (Ethernet+IPv6 fixed offsets).
-// Valid because we only accept IPv6 w/o extension headers and ICMPv6 next header.
-func fixChecksumSimple(b []byte) {
-	if len(b) < icmpoff+4 || len(b) < ip6off+40 {
+// rememberRouterLLA records a router's link-local address.
+func (h *Hub) rememberRouterLLA(ip net.IP) {
+	if ip == nil || !ip.IsLinkLocalUnicast() {
 		return
 	}
-	// zero checksum
-	b[icmpoff+2], b[icmpoff+3] = 0, 0
-
-	plen := int(b[ip6off+4])<<8 | int(b[ip6off+5])
-	end := icmpoff + plen
-	if end > len(b) {
-		end = len(b)
-	}
-
-	sum := uint32(0)
-
-	add16 := func(start, n int) {
-		for i := 0; i+1 < n; i += 2 {
-			sum += uint32(uint16(b[start+i])<<8 | uint16(b[start+i+1]))
-		}
-	}
-
-	// IPv6 pseudo-header: src + dst + length + next header
-	add16(ip6off+8, 32)
-	sum += uint32(plen)
-	sum += uint32(58)
-
-	// ICMPv6 body
-	for i := icmpoff; i+1 < end; i += 2 {
-		sum += uint32(uint16(b[i])<<8 | uint16(b[i+1]))
-	}
-	if ((end - icmpoff) & 1) == 1 {
-		sum += uint32(uint16(b[end-1]) << 8)
-	}
-
-	for (sum >> 16) != 0 {
-		sum = (sum & 0xffff) + (sum >> 16)
-	}
-	csum := ^uint16(sum & 0xffff)
-	b[icmpoff+2], b[icmpoff+3] = byte(csum>>8), byte(csum)
+	h.muRouter.Lock()
+	h.routerLLA[ip.String()] = struct{}{}
+	h.muRouter.Unlock()
+	h.Config.debugLog("router LLA learned: %s", ip)
 }
 
-// ---------- main ----------
+// isRouterLLA checks if an IP is a known router link-local address.
+func (h *Hub) isRouterLLA(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	h.muRouter.RLock()
+	defer h.muRouter.RUnlock()
+	_, ok := h.routerLLA[ip.String()]
+	return ok
+}
+
+// ============================================================================
+// Main
+// ============================================================================
 
 func main() {
-	flag.Parse()
+	config := ParseFlags()
 	args := flag.Args()
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "usage: %s [flags] <up_if> <down_if1> [...]\n", os.Args[0])
 		os.Exit(1)
 	}
 
-	up := openPort(args[0])
+	// Open upstream port
+	up := OpenPort(args[0])
 	defer up.H.Close()
 
+	// Open downstream ports
 	var downs []*Port
 	for _, n := range args[1:] {
-		p := openPort(n)
+		p := OpenPort(n)
 		defer p.H.Close()
 		downs = append(downs, p)
 	}
 
-	rtw := newRouteWorker(*flagRouteQPS, *flagRouteBurst)
-	defer rtw.stop()
+	// Initialize route worker
+	rtw := newRouteWorker(config.RouteQPS, config.RouteBurst)
+	defer rtw.Stop()
 
-	pdb := newPrefixDB()
-	cache := &Cache{
-		ttl:   *flagCacheTTL,
-		max:   *flagCacheMax,
-		allow: pdb,
-		rt:    rtw,
-		noRt:  *flagNoRoutes,
-	}
+	// Initialize prefix database and cache
+	pdb := NewPrefixDB(config)
+	cache := NewCache(config, pdb, rtw)
 
-	h := &Hub{
-		Up:   up,
-		Down: downs,
-		C:    cache,
-		Dup:  &DedupCache{},
-		pdb:  pdb,
-	}
+	// Create hub
+	hub := NewHub(up, downs, cache, pdb, config)
 
+	// Setup context and signal handling
 	ctx, stop := context.WithCancel(context.Background())
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
-	// periodic housekeeping
+	// Periodic housekeeping
 	var houseWG sync.WaitGroup
 	houseWG.Add(1)
 	go func() {
 		defer houseWG.Done()
-		t := time.NewTicker(1 * time.Minute)
-		defer t.Stop()
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-t.C:
-				h.C.Sweep()
-				h.pdb.Sweep()
-				h.Dup.Sweep()
+			case <-ticker.C:
+				hub.Cache.Sweep()
+				hub.prefixDB.Sweep()
+				hub.Dedup.Sweep()
 			}
 		}
 	}()
 
 	log.Printf("ndp-proxy-go: up=%s down=%s (no-ra=%v no-routes=%v rewrite-lla=%v debug=%v)",
-		up.Name, strings.Join(args[1:], ","), *flagNoRA, *flagNoRoutes, !*flagNoRewrite, *flagDebug)
+		up.Name, strings.Join(args[1:], ","), config.NoRA, config.NoRoutes, !config.NoRewrite, config.Debug)
 
-	h.Start(ctx)
+	hub.Start(ctx)
 
-	// graceful shutdown
+	// Graceful shutdown
 	go func() {
 		<-sig
 		log.Printf("ndp-proxy-go: shutting down...")
 		stop()
 	}()
 
-	h.Wait()
+	hub.Wait()
 	houseWG.Wait()
 
-	if !*flagNoRoutes {
-		h.C.CleanupAll()
+	if !config.NoRoutes {
+		hub.Cache.CleanupAll()
 	}
 
 	log.Printf("ndp-proxy-go: exit clean")
