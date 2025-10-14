@@ -1,0 +1,95 @@
+//
+// port.go - Network interface abstraction with packet capture
+//
+// Opens interfaces via PCAP with strict BPF filtering (ICMPv6, HLIM=255, types
+// 133-136 only) and provides Write() to send packets with optional MAC rewriting.
+//
+// Need raw packet capture and injection to intercept and forward NDP
+// messages. BPF filtering in kernel space is critical to avoid processing
+// irrelevant traffic and prevents accepting spoofed ND packets (HLIM!=255).
+//
+
+package main
+
+import (
+	"log"
+	"net"
+	"sync"
+
+	"github.com/google/gopacket/pcap"
+)
+
+// Port represents a network interface with its PCAP handle and addressing info.
+type Port struct {
+	Name string
+	HW   net.HardwareAddr
+	LLA  net.IP // Link-local address (fe80::) for this interface
+	H    *pcap.Handle
+	wmu  sync.Mutex // Serialize PCAP writes
+}
+
+// OpenPort opens a network interface for packet capture with strict ND filtering.
+func OpenPort(name string) *Port {
+	ih, err := pcap.NewInactiveHandle(name)
+	if err != nil {
+		log.Fatalf("pcap inactive %s: %v", name, err)
+	}
+	defer ih.CleanUp()
+
+	_ = ih.SetSnapLen(65535)
+	_ = ih.SetPromisc(true)
+	_ = ih.SetTimeout(pcap.BlockForever)
+	_ = ih.SetImmediateMode(true)
+
+	h, err := ih.Activate()
+	if err != nil {
+		log.Fatalf("pcap activate %s: %v", name, err)
+	}
+	_ = h.SetDirection(pcap.DirectionIn)
+
+	// Strict BPF: ICMPv6, HLIM==255, only ND/RA types (133..136).
+	filter := "icmp6 and ip6[7]=255 and (ip6[40]=133 or ip6[40]=134 or ip6[40]=135 or ip6[40]=136)"
+	if err := h.SetBPFFilter(filter); err != nil {
+		log.Fatalf("installing BPF on %s failed (%v); refusing broad capture", name, err)
+	}
+
+	ifi, _ := net.InterfaceByName(name)
+	return &Port{
+		Name: name,
+		HW:   ifi.HardwareAddr,
+		LLA:  FindLinkLocal(name),
+		H:    h,
+	}
+}
+
+// Write sends a packet out this port, optionally rewriting MAC addresses.
+func (p *Port) Write(b []byte, src, dst net.HardwareAddr) {
+	if len(b) < 14 {
+		return
+	}
+	out := append([]byte(nil), b...)
+	if dst != nil {
+		copy(out[0:6], dst)
+	}
+	if src != nil {
+		copy(out[6:12], src)
+	}
+	p.wmu.Lock()
+	_ = p.H.WritePacketData(out)
+	p.wmu.Unlock()
+}
+
+// FindLinkLocal returns the link-local IPv6 address for the given interface.
+func FindLinkLocal(name string) net.IP {
+	ifi, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil
+	}
+	addrs, _ := ifi.Addrs()
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && ipn.IP != nil && ipn.IP.To16() != nil && ipn.IP.IsLinkLocalUnicast() {
+			return ipn.IP
+		}
+	}
+	return nil
+}

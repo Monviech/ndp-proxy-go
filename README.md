@@ -85,12 +85,18 @@ sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 igc1 igc0
 
 ### Components
 
-- **Port** - Network interface with PCAP handle and addressing
-- **Hub** - Central forwarding logic managing bidirectional packet flow
-- **Cache** - Learned neighbor tracking with TTL-based expiry
-- **PrefixDB** - RA-learned prefixes with ValidLifetime tracking
-- **RouteWorker** - Rate-limited route add/delete operations
-- **DedupCache** - Short-lived deduplication window (200ms)
+```
+ndp-proxy-go/
+│
+├── hub.go        Core forwarding engine - bridges NDP between segments
+├── packet.go     Parse/validate/build ICMPv6 ND packets per RFC 4861
+├── cache.go      Learn and track client IP→MAC→port mappings
+├── main.go       Entry point - orchestrates startup and shutdown
+├── port.go       PCAP interface wrapper with BPF filtering
+├── config.go     Command-line flags and runtime configuration
+├── route.go      Install per-host /128 routes (optional feature)
+└── prefix.go     Track RA prefixes for address validation (security)
+```
 
 ## License
 

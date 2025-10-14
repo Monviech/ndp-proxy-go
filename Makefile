@@ -3,7 +3,7 @@ BINDIR=		/usr/local/sbin
 RCDIR=		/usr/local/etc/rc.d
 
 all:
-	go build -ldflags="-s -w" -o ${PROG} main.go
+	go build -ldflags="-s -w" -o ${PROG}
 
 install: all
 	install -m 755 ${PROG} ${BINDIR}/
