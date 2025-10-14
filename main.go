@@ -56,13 +56,13 @@ func main() {
 	}
 
 	// Open upstream port
-	up := OpenPort(args[0])
+	up := OpenPort(args[0], config)
 	defer up.H.Close()
 
 	// Open downstream ports
 	var downs []*Port
 	for _, n := range args[1:] {
-		p := OpenPort(n)
+		p := OpenPort(n, config)
 		defer p.H.Close()
 		downs = append(downs, p)
 	}

@@ -48,6 +48,9 @@ ndp-proxy-go [flags] <up_if> <down_if1> [<down_if2> ...]
 | `--cache-max <n>` | Maximum learned neighbors | 4096 |
 | `--route-qps <n>` | Max route operations per second | 50 |
 | `--route-burst <n>` | Burst of route ops before limiting | 50 |
+| `--pcap-timeout <dur>` | Packet capture timeout (lower = less latency, higher = less CPU) | 50ms |
+
+**Performance Tuning:** The `--pcap-timeout` flag balances CPU usage vs NDP responsiveness. Lower values (25ms) minimize latency spikes during NDP refresh at the cost of slightly higher CPU usage. Higher values (100-250ms) reduce CPU usage but may cause occasional latency spikes (up to 500ms) when neighbor cache entries expire.
 
 ### Examples
 

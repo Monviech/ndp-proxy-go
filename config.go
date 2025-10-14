@@ -15,15 +15,16 @@ import (
 
 // Config holds runtime configuration parsed from command-line flags.
 type Config struct {
-	NoRA       bool
-	NoRoutes   bool
-	AllowDAD   bool
-	NoRewrite  bool
-	Debug      bool
-	CacheTTL   time.Duration
-	CacheMax   int
-	RouteQPS   int
-	RouteBurst int
+	NoRA        bool
+	NoRoutes    bool
+	AllowDAD    bool
+	NoRewrite   bool
+	Debug       bool
+	CacheTTL    time.Duration
+	CacheMax    int
+	RouteQPS    int
+	RouteBurst  int
+	PcapTimeout time.Duration
 }
 
 // ShouldForwardType returns true if the given ICMPv6 type should be forwarded.
@@ -46,6 +47,7 @@ func ParseFlags() *Config {
 	flag.IntVar(&cfg.CacheMax, "cache-max", 4096, "max neighbors to track")
 	flag.IntVar(&cfg.RouteQPS, "route-qps", 50, "max /sbin/route operations per second (rate limited)")
 	flag.IntVar(&cfg.RouteBurst, "route-burst", 50, "burst of route operations allowed before limiting")
+	flag.DurationVar(&cfg.PcapTimeout, "pcap-timeout", 50*time.Millisecond, "packet capture timeout (lower = less latency, higher = less CPU)")
 	flag.Parse()
 	return cfg
 }

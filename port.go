@@ -15,7 +15,6 @@ import (
 	"log"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/google/gopacket/pcap"
 )
@@ -30,7 +29,7 @@ type Port struct {
 }
 
 // OpenPort opens a network interface for packet capture with strict ND filtering.
-func OpenPort(name string) *Port {
+func OpenPort(name string, config *Config) *Port {
 	ih, err := pcap.NewInactiveHandle(name)
 	if err != nil {
 		log.Fatalf("pcap inactive %s: %v", name, err)
@@ -40,9 +39,10 @@ func OpenPort(name string) *Port {
 	_ = ih.SetSnapLen(1500) // Reduced from 65535 - we only need ND packets
 	_ = ih.SetPromisc(true)
 
-	// Use a longer timeout to reduce wakeup frequency
-	// ND packets are infrequent, so 250ms latency is acceptable
-	_ = ih.SetTimeout(250 * time.Millisecond)
+	// Configurable timeout balances CPU usage vs latency
+	// Lower values (25-50ms) = better NDP responsiveness, slightly higher CPU
+	// Higher values (100-250ms) = lower CPU usage, occasional latency spikes
+	_ = ih.SetTimeout(config.PcapTimeout)
 
 	// Increase buffer size to batch packets and reduce wakeups
 	_ = ih.SetBufferSize(4 * 1024 * 1024) // 4MB buffer
