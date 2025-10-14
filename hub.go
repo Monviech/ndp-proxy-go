@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 )
 
 // DedupCache provides a short-lived deduplication window for forwarded packets.
@@ -146,7 +147,7 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 			}
 
 			// Proxy router LLA locally (NS for router's fe80:: target)
-			if ndPkt.Type() == IcmpTypeNeighborSolicitation {
+			if ndPkt.Type() == layers.ICMPv6TypeNeighborSolicitation {
 				if tgt := ndPkt.Target(); tgt != nil && h.isRouterLLA(tgt) {
 					if na := BuildNA(src, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, true); na != nil {
 						src.Write(na, src.HW, ndPkt.eth.SrcMAC)
@@ -189,7 +190,7 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 			}
 
 			// RA: learn router LLA and prefixes
-			if ndPkt.Type() == IcmpTypeRouterAdvertisement {
+			if ndPkt.Type() == layers.ICMPv6TypeRouterAdvertisement {
 				h.rememberRouterLLA(ndPkt.ipv6.SrcIP)
 				for _, pi := range ndPkt.ParseRAPrefixes() {
 					h.prefixDB.Add(pi.Net, pi.Valid)
@@ -197,7 +198,7 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 			}
 
 			// Proxy client global NA locally on uplink
-			if ndPkt.Type() == IcmpTypeNeighborSolicitation {
+			if ndPkt.Type() == layers.ICMPv6TypeNeighborSolicitation {
 				if tgt := ndPkt.Target(); tgt != nil && !tgt.IsLinkLocalUnicast() {
 					if n, ok := h.Cache.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(h.Down) {
 						if na := BuildNA(h.Up, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, false); na != nil {

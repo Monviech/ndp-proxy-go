@@ -2,7 +2,7 @@
 // packet.go - ICMPv6 Neighbor Discovery packet parsing and building
 //
 // Parses ND packets (NS, NA, RS, RA) with RFC 4861 validation (HLIM=255, no
-// extension headers). Builds proxy NA and RS packets using manual byte manipulation.
+// extension headers). Builds proxy NA and RS packets using gopacket layers.
 // Sanitizes packets by rewriting link-layer options to egress interface MAC.
 //
 // Core NDP proxy function requires understanding packet structure to make
@@ -23,32 +23,9 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-// Constants
+// Constants for RFC 4861 compliance
 const (
-	// ICMPv6 message types per RFC 4861
-	IcmpTypeRouterSolicitation    = 133
-	IcmpTypeRouterAdvertisement   = 134
-	IcmpTypeNeighborSolicitation  = 135
-	IcmpTypeNeighborAdvertisement = 136
-
-	// Packet structure offsets (Ethernet frame)
-	EthernetHeaderSize = 14
-	IPv6HeaderSize     = 40
-	Icmpv6Offset       = EthernetHeaderSize + IPv6HeaderSize
-	IPv6Offset         = EthernetHeaderSize
-
-	// RFC 4861 requirement: Hop Limit must be 255 for ND messages
-	NdHopLimit = 255
-
-	// NA flags (RFC 4861 §4.4)
-	NaFlagRouter    = 1 << 7
-	NaFlagSolicited = 1 << 6
-	NaFlagOverride  = 1 << 5
-
-	// ND option types
-	NdOptSourceLLA  = 1
-	NdOptTargetLLA  = 2
-	NdOptPrefixInfo = 3
+	NdHopLimit = 255 // RFC 4861 requirement: Hop Limit must be 255 for ND messages
 )
 
 // NDPacket wraps a parsed ND/RA packet with helper methods.
@@ -89,7 +66,7 @@ func ParseNDPacket(pkt gopacket.Packet) *NDPacket {
 	if ip6.DstIP.IsLinkLocalUnicast() &&
 		!isMulticastEther(eth) &&
 		!ip6.DstIP.IsMulticast() &&
-		icmpType != IcmpTypeRouterAdvertisement {
+		icmpType != layers.ICMPv6TypeRouterAdvertisement {
 		return nil
 	}
 
@@ -108,19 +85,27 @@ func (p *NDPacket) Type() uint8 {
 
 // Target extracts the target address from NS/NA messages.
 func (p *NDPacket) Target() net.IP {
-	if len(p.raw) < Icmpv6Offset+24 {
-		return nil
+	// Try to get the specific layer
+	if nsLayer := p.getLayer(layers.LayerTypeICMPv6NeighborSolicitation); nsLayer != nil {
+		ns := nsLayer.(*layers.ICMPv6NeighborSolicitation)
+		return ns.TargetAddress
 	}
-	t := p.Type()
-	if t != IcmpTypeNeighborSolicitation && t != IcmpTypeNeighborAdvertisement {
-		return nil
+	if naLayer := p.getLayer(layers.LayerTypeICMPv6NeighborAdvertisement); naLayer != nil {
+		na := naLayer.(*layers.ICMPv6NeighborAdvertisement)
+		return na.TargetAddress
 	}
-	return net.IP(append([]byte{}, p.raw[Icmpv6Offset+8:Icmpv6Offset+24]...))
+	return nil
+}
+
+// getLayer is a helper to extract a specific layer from the raw packet data
+func (p *NDPacket) getLayer(layerType gopacket.LayerType) gopacket.Layer {
+	packet := gopacket.NewPacket(p.raw, layers.LayerTypeEthernet, gopacket.NoCopy)
+	return packet.Layer(layerType)
 }
 
 // IsDAD returns true if this is a DAD probe (NS with unspecified source).
 func (p *NDPacket) IsDAD() bool {
-	return p.Type() == IcmpTypeNeighborSolicitation && p.ipv6.SrcIP.IsUnspecified()
+	return p.Type() == layers.ICMPv6TypeNeighborSolicitation && p.ipv6.SrcIP.IsUnspecified()
 }
 
 // IsMulticast returns true if this packet is multicast (Ethernet or IPv6).
@@ -136,132 +121,208 @@ type RAPrefix struct {
 
 // ParseRAPrefixes extracts prefix information options from an RA.
 func (p *NDPacket) ParseRAPrefixes() []RAPrefix {
-	out := []RAPrefix{}
-	if len(p.raw) < Icmpv6Offset+16 || p.Type() != IcmpTypeRouterAdvertisement {
-		return out
+	var result []RAPrefix
+
+	if p.Type() != layers.ICMPv6TypeRouterAdvertisement {
+		return result
 	}
 
-	plen := int(p.raw[IPv6Offset+4])<<8 | int(p.raw[IPv6Offset+5])
-	optStart := Icmpv6Offset + 16
-	optEnd := IPv6Offset + 40 + plen
-	if optEnd > len(p.raw) {
-		optEnd = len(p.raw)
+	// Get the RA layer
+	raLayer := p.getLayer(layers.LayerTypeICMPv6RouterAdvertisement)
+	if raLayer == nil {
+		return result
 	}
 
-	for i := optStart; i+2 <= optEnd; {
-		t := p.raw[i]
-		l := int(p.raw[i+1]) * 8
-		if l <= 0 || i+l > optEnd {
-			break
-		}
-		if t == NdOptPrefixInfo && l >= 32 {
-			pfxLen := int(p.raw[i+2])
-			valid := binary.BigEndian.Uint32(p.raw[i+4 : i+8])
-			pfx := net.IP(append([]byte{}, p.raw[i+16:i+32]...))
-			if pfx.To16() != nil && pfxLen >= 0 && pfxLen <= 128 {
-				mask := net.CIDRMask(pfxLen, 128)
-				network := pfx.Mask(mask)
-				_, n, _ := net.ParseCIDR(fmt.Sprintf("%s/%d", network, pfxLen))
-				if n != nil && valid > 0 {
-					out = append(out, RAPrefix{
-						Net:   n,
-						Valid: time.Duration(valid) * time.Second,
+	ra := raLayer.(*layers.ICMPv6RouterAdvertisement)
+
+	// Parse prefix information options
+	for _, opt := range ra.Options {
+		if opt.Type == layers.ICMPv6OptPrefixInfo && len(opt.Data) >= 30 {
+			prefixLen := int(opt.Data[0])
+			validLifetime := binary.BigEndian.Uint32(opt.Data[2:6])
+
+			// Prefix starts at offset 14 in the option data
+			prefix := net.IP(opt.Data[14:30])
+
+			if prefix.To16() != nil && prefixLen >= 0 && prefixLen <= 128 && validLifetime > 0 {
+				mask := net.CIDRMask(prefixLen, 128)
+				network := prefix.Mask(mask)
+				_, ipNet, _ := net.ParseCIDR(fmt.Sprintf("%s/%d", network, prefixLen))
+
+				if ipNet != nil {
+					result = append(result, RAPrefix{
+						Net:   ipNet,
+						Valid: time.Duration(validLifetime) * time.Second,
 					})
 				}
 			}
 		}
-		i += l
 	}
-	return out
+
+	return result
 }
 
-// Sanitize normalizes the packet: HLIM=255, rewrite LLA options, recompute checksum.
+// Sanitize normalizes the packet: HLIM=255, optionally rewrite LLA options.
 func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
-	out := append([]byte(nil), p.raw...)
-	if len(out) < Icmpv6Offset+4 {
-		return out
+	if !rewriteOpts {
+		// No rewriting needed, just return a copy
+		return append([]byte(nil), p.raw...)
 	}
 
-	// Force HLIM=255
-	out[IPv6Offset+7] = NdHopLimit
-
-	// Optionally rewrite SLLA/TLLA
-	if rewriteOpts && len(egress.HW) >= 6 {
-		optStart := Icmpv6Offset
-		switch p.Type() {
-		case IcmpTypeRouterAdvertisement:
-			optStart += 16
-		case IcmpTypeNeighborSolicitation, IcmpTypeNeighborAdvertisement:
-			optStart += 24
-		default:
-			return out
-		}
-
-		plen := int(out[IPv6Offset+4])<<8 | int(out[IPv6Offset+5])
-		optEnd := IPv6Offset + 40 + plen
-		if optEnd > len(out) {
-			optEnd = len(out)
-		}
-
-		for i := optStart; i+2 <= optEnd; {
-			l := int(out[i+1]) * 8
-			if l <= 0 || i+l > optEnd {
-				break
-			}
-			if (out[i] == NdOptSourceLLA || out[i] == NdOptTargetLLA) && l >= 8 {
-				copy(out[i+2:i+8], egress.HW[:6])
-			}
-			i += l
-		}
+	// Rebuild the packet with rewritten options
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
 	}
 
-	FixChecksum(out)
-	return out
+	// Rebuild IPv6 layer with correct hop limit
+	ip6 := &layers.IPv6{
+		Version:      6,
+		TrafficClass: p.ipv6.TrafficClass,
+		FlowLabel:    p.ipv6.FlowLabel,
+		Length:       p.ipv6.Length,
+		NextHeader:   layers.IPProtocolICMPv6,
+		HopLimit:     NdHopLimit,
+		SrcIP:        p.ipv6.SrcIP,
+		DstIP:        p.ipv6.DstIP,
+	}
+
+	// Rebuild ICMPv6 with checksum computation
+	icmp := &layers.ICMPv6{
+		TypeCode: p.icmpv6.TypeCode,
+	}
+	if err := icmp.SetNetworkLayerForChecksum(ip6); err != nil {
+		return append([]byte(nil), p.raw...)
+	}
+
+	// Get the specific ND layer and rewrite options if needed
+	var ndLayer gopacket.SerializableLayer
+
+	switch p.Type() {
+	case layers.ICMPv6TypeRouterAdvertisement:
+		if raLayer := p.getLayer(layers.LayerTypeICMPv6RouterAdvertisement); raLayer != nil {
+			ra := raLayer.(*layers.ICMPv6RouterAdvertisement)
+			// Rewrite source link-layer address option
+			ra.Options = rewriteOptions(ra.Options, egress.HW, layers.ICMPv6OptSourceAddress)
+			ndLayer = ra
+		}
+	case layers.ICMPv6TypeNeighborSolicitation:
+		if nsLayer := p.getLayer(layers.LayerTypeICMPv6NeighborSolicitation); nsLayer != nil {
+			ns := nsLayer.(*layers.ICMPv6NeighborSolicitation)
+			ns.Options = rewriteOptions(ns.Options, egress.HW, layers.ICMPv6OptSourceAddress)
+			ndLayer = ns
+		}
+	case layers.ICMPv6TypeNeighborAdvertisement:
+		if naLayer := p.getLayer(layers.LayerTypeICMPv6NeighborAdvertisement); naLayer != nil {
+			na := naLayer.(*layers.ICMPv6NeighborAdvertisement)
+			na.Options = rewriteOptions(na.Options, egress.HW, layers.ICMPv6OptTargetAddress)
+			ndLayer = na
+		}
+	default:
+		// For other types, just return original
+		return append([]byte(nil), p.raw...)
+	}
+
+	if ndLayer == nil {
+		return append([]byte(nil), p.raw...)
+	}
+
+	// Serialize all layers
+	if err := gopacket.SerializeLayers(buf, opts,
+		p.eth,
+		ip6,
+		icmp,
+		ndLayer,
+	); err != nil {
+		return append([]byte(nil), p.raw...)
+	}
+
+	return buf.Bytes()
 }
 
-// BuildNA constructs a unicast Neighbor Advertisement.
+// rewriteOptions replaces link-layer addresses in ND options
+func rewriteOptions(opts layers.ICMPv6Options, newMAC net.HardwareAddr, optType layers.ICMPv6Opt) layers.ICMPv6Options {
+	result := make(layers.ICMPv6Options, len(opts))
+	for i, opt := range opts {
+		if opt.Type == optType && len(newMAC) >= 6 {
+			// Rewrite the MAC address
+			newData := make([]byte, len(opt.Data))
+			copy(newData, opt.Data)
+			if len(newData) >= 6 {
+				copy(newData[0:6], newMAC[0:6])
+			}
+			result[i] = layers.ICMPv6Option{
+				Type: opt.Type,
+				Data: newData,
+			}
+		} else {
+			result[i] = opt
+		}
+	}
+	return result
+}
+
+// BuildNA constructs a unicast Neighbor Advertisement using gopacket layers.
 func BuildNA(egress *Port, dstIP net.IP, dstMAC net.HardwareAddr, target net.IP, setRouter bool) []byte {
 	if egress == nil || egress.HW == nil || egress.LLA == nil || dstIP == nil || dstMAC == nil || target == nil {
 		return nil
 	}
 
-	// Eth(14) + IPv6(40) + ICMPv6 NA(24) + TLLA(8) = 86
-	b := make([]byte, 86)
-
-	// Ethernet
-	copy(b[0:6], dstMAC)
-	copy(b[6:12], egress.HW)
-	b[12], b[13] = 0x86, 0xdd
-
-	// IPv6
-	plen := 24 + 8
-	b[IPv6Offset+0] = 0x60 // Version 6
-	b[IPv6Offset+4] = byte(plen >> 8)
-	b[IPv6Offset+5] = byte(plen)
-	b[IPv6Offset+6] = 58 // Next header ICMPv6
-	b[IPv6Offset+7] = NdHopLimit
-	copy(b[IPv6Offset+8:IPv6Offset+24], egress.LLA.To16())
-	copy(b[IPv6Offset+24:IPv6Offset+40], dstIP.To16())
-
-	// ICMPv6 NA
-	b[Icmpv6Offset+0] = IcmpTypeNeighborAdvertisement
-	// Code = 0
-	flags := byte(0)
+	// Build NA flags
+	var flags uint8 = 0x60 // Solicited + Override
 	if setRouter {
-		flags |= NaFlagRouter
+		flags |= 0x80 // Router flag
 	}
-	flags |= NaFlagSolicited
-	flags |= NaFlagOverride
-	b[Icmpv6Offset+4] = flags
-	copy(b[Icmpv6Offset+8:Icmpv6Offset+24], target.To16())
 
-	// TLLA option: type 2, len 1 (8 bytes), value = MAC(6)
-	b[Icmpv6Offset+24] = NdOptTargetLLA
-	b[Icmpv6Offset+25] = 1
-	copy(b[Icmpv6Offset+26:Icmpv6Offset+32], egress.HW[:6])
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
 
-	FixChecksum(b)
-	return b
+	ip6 := &layers.IPv6{
+		Version:    6,
+		HopLimit:   NdHopLimit,
+		NextHeader: layers.IPProtocolICMPv6,
+		SrcIP:      egress.LLA,
+		DstIP:      dstIP,
+	}
+
+	icmp6 := &layers.ICMPv6{
+		TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeNeighborAdvertisement, 0),
+	}
+	if err := icmp6.SetNetworkLayerForChecksum(ip6); err != nil {
+		return nil
+	}
+
+	na := &layers.ICMPv6NeighborAdvertisement{
+		Flags:         flags,
+		TargetAddress: target,
+		Options: layers.ICMPv6Options{
+			{
+				Type: layers.ICMPv6OptTargetAddress,
+				Data: egress.HW,
+			},
+		},
+	}
+
+	err := gopacket.SerializeLayers(buf, opts,
+		&layers.Ethernet{
+			SrcMAC:       egress.HW,
+			DstMAC:       dstMAC,
+			EthernetType: layers.EthernetTypeIPv6,
+		},
+		ip6,
+		icmp6,
+		na,
+	)
+
+	if err != nil {
+		return nil
+	}
+
+	return buf.Bytes()
 }
 
 // SendRouterSolicitation sends a Router Solicitation to trigger an immediate RA.
@@ -270,92 +331,56 @@ func SendRouterSolicitation(port *Port) error {
 		return fmt.Errorf("invalid port for RS")
 	}
 
-	// All-routers multicast: ff02::2
-	allRoutersIP := net.ParseIP("ff02::2")
-	// Ethernet MAC for ff02::2 is 33:33:00:00:00:02
+	allRouters := net.ParseIP("ff02::2")
 	allRoutersMAC := net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0x02}
 
-	// RS = Eth(14) + IPv6(40) + ICMPv6(8) + SLLA(8) = 70 bytes
-	b := make([]byte, 70)
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
 
-	// Ethernet header
-	copy(b[0:6], allRoutersMAC)
-	copy(b[6:12], port.HW)
-	b[12], b[13] = 0x86, 0xdd // EtherType IPv6
+	ip6 := &layers.IPv6{
+		Version:    6,
+		HopLimit:   NdHopLimit,
+		NextHeader: layers.IPProtocolICMPv6,
+		SrcIP:      port.LLA,
+		DstIP:      allRouters,
+	}
 
-	// IPv6 header
-	plen := 16             // ICMPv6 RS (8 bytes) + SLLA option (8 bytes)
-	b[IPv6Offset+0] = 0x60 // Version 6
-	b[IPv6Offset+4] = byte(plen >> 8)
-	b[IPv6Offset+5] = byte(plen)
-	b[IPv6Offset+6] = 58 // Next header: ICMPv6
-	b[IPv6Offset+7] = NdHopLimit
-	copy(b[IPv6Offset+8:IPv6Offset+24], port.LLA.To16())
-	copy(b[IPv6Offset+24:IPv6Offset+40], allRoutersIP.To16())
+	icmp6 := &layers.ICMPv6{
+		TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeRouterSolicitation, 0),
+	}
+	if err := icmp6.SetNetworkLayerForChecksum(ip6); err != nil {
+		return err
+	}
 
-	// ICMPv6 Router Solicitation (type 133)
-	b[Icmpv6Offset+0] = IcmpTypeRouterSolicitation
-	b[Icmpv6Offset+1] = 0 // Code
-	// Checksum at offset+2,3 will be set by FixChecksum
-	// Reserved (4 bytes) already zero
+	rs := &layers.ICMPv6RouterSolicitation{
+		Options: layers.ICMPv6Options{
+			{
+				Type: layers.ICMPv6OptSourceAddress,
+				Data: port.HW,
+			},
+		},
+	}
 
-	// SLLA option: type 1, length 1 (8 bytes total)
-	b[Icmpv6Offset+8] = NdOptSourceLLA
-	b[Icmpv6Offset+9] = 1 // Length in 8-byte units
-	copy(b[Icmpv6Offset+10:Icmpv6Offset+16], port.HW[:6])
+	err := gopacket.SerializeLayers(buf, opts,
+		&layers.Ethernet{
+			SrcMAC:       port.HW,
+			DstMAC:       allRoutersMAC,
+			EthernetType: layers.EthernetTypeIPv6,
+		},
+		ip6,
+		icmp6,
+		rs,
+	)
 
-	// Compute ICMPv6 checksum
-	FixChecksum(b)
+	if err != nil {
+		return err
+	}
 
-	// Send the RS
-	port.Write(b, port.HW, allRoutersMAC)
-
+	port.Write(buf.Bytes(), port.HW, allRoutersMAC)
 	return nil
-}
-
-// FixChecksum recomputes the ICMPv6 checksum for a packet.
-func FixChecksum(b []byte) {
-	if len(b) < Icmpv6Offset+4 || len(b) < IPv6Offset+40 {
-		return
-	}
-
-	// Zero checksum field
-	b[Icmpv6Offset+2], b[Icmpv6Offset+3] = 0, 0
-
-	plen := int(b[IPv6Offset+4])<<8 | int(b[IPv6Offset+5])
-	end := Icmpv6Offset + plen
-	if end > len(b) {
-		end = len(b)
-	}
-
-	sum := uint32(0)
-
-	// Helper to add 16-bit words
-	add16 := func(start, n int) {
-		for i := 0; i+1 < n; i += 2 {
-			sum += uint32(uint16(b[start+i])<<8 | uint16(b[start+i+1]))
-		}
-	}
-
-	// IPv6 pseudo-header: src + dst + length + next header
-	add16(IPv6Offset+8, 32)
-	sum += uint32(plen)
-	sum += uint32(58) // ICMPv6
-
-	// ICMPv6 body
-	for i := Icmpv6Offset; i+1 < end; i += 2 {
-		sum += uint32(uint16(b[i])<<8 | uint16(b[i+1]))
-	}
-	if ((end - Icmpv6Offset) & 1) == 1 {
-		sum += uint32(uint16(b[end-1]) << 8)
-	}
-
-	// Fold carries
-	for (sum >> 16) != 0 {
-		sum = (sum & 0xffff) + (sum >> 16)
-	}
-	csum := ^uint16(sum & 0xffff)
-	b[Icmpv6Offset+2], b[Icmpv6Offset+3] = byte(csum>>8), byte(csum)
 }
 
 // isMulticastEther returns true if the Ethernet destination is multicast.
