@@ -13,6 +13,7 @@ package main
 
 import (
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -28,7 +29,7 @@ type Neighbor struct {
 // Cache tracks learned neighbors with expiry and optional route management.
 type Cache struct {
 	mu     sync.RWMutex
-	m      map[string]Neighbor
+	m      map[netip.Addr]Neighbor
 	ttl    time.Duration
 	max    int
 	allow  *PrefixDB
@@ -40,7 +41,7 @@ type Cache struct {
 // NewCache creates a new neighbor cache.
 func NewCache(config *Config, allow *PrefixDB, rt *RouteWorker) *Cache {
 	return &Cache{
-		m:      make(map[string]Neighbor),
+		m:      make(map[netip.Addr]Neighbor),
 		ttl:    config.CacheTTL,
 		max:    config.CacheMax,
 		allow:  allow,
@@ -64,7 +65,12 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 		return
 	}
 
-	k := ip.String()
+	// Convert to netip.Addr
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return
+	}
+
 	now := time.Now()
 	expire := now.Add(c.ttl)
 
@@ -72,35 +78,40 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 	defer c.mu.Unlock()
 
 	// If entry exists and still valid, just refresh expiry
-	if old, ok := c.m[k]; ok && now.Before(old.Exp) {
+	if old, ok := c.m[addr]; ok && now.Before(old.Exp) {
 		old.Exp = expire
-		c.m[k] = old
-		c.config.DebugLog("refreshed %s on %s (port %d)", k, ifn, port)
+		c.m[addr] = old
+		c.config.DebugLog("refreshed %s on %s (port %d)", addr, ifn, port)
 		return
 	}
 
 	// Enforce max neighbor cap
 	if c.max > 0 && len(c.m) >= c.max {
-		c.config.DebugLog("cache full, skipping learn for %s", k)
+		c.config.DebugLog("cache full, skipping learn for %s", addr)
 		return
 	}
 
 	// Insert or replace
-	c.m[k] = Neighbor{MAC: mac, Port: port, If: ifn, Exp: expire}
+	c.m[addr] = Neighbor{MAC: mac, Port: port, If: ifn, Exp: expire}
 
 	// Add per-host route asynchronously
 	if !c.noRt {
-		c.rt.Add(k, ifn)
+		c.rt.Add(addr.String(), ifn)
 	}
 
-	c.config.DebugLog("learned %s on %s (port %d)", k, ifn, port)
+	c.config.DebugLog("learned %s on %s (port %d)", addr, ifn, port)
 }
 
 // Lookup retrieves a neighbor by IP address.
 func (c *Cache) Lookup(ip net.IP) (Neighbor, bool) {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return Neighbor{}, false
+	}
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	n, ok := c.m[ip.String()]
+	n, ok := c.m[addr]
 	return n, ok
 }
 
@@ -109,11 +120,11 @@ func (c *Cache) Sweep() {
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for ip, n := range c.m {
+	for addr, n := range c.m {
 		if now.After(n.Exp) {
-			delete(c.m, ip)
+			delete(c.m, addr)
 			if !c.noRt {
-				c.rt.Delete(ip)
+				c.rt.Delete(addr.String())
 			}
 		}
 	}
@@ -126,7 +137,7 @@ func (c *Cache) CleanupAll() {
 	if c.noRt {
 		return
 	}
-	for ip := range c.m {
-		c.rt.Delete(ip)
+	for addr := range c.m {
+		c.rt.Delete(addr.String())
 	}
 }

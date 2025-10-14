@@ -13,6 +13,7 @@ package main
 
 import (
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -20,14 +21,14 @@ import (
 // PrefixDB tracks allowed global prefixes learned from RA Prefix Info options.
 type PrefixDB struct {
 	mu     sync.RWMutex
-	m      map[string]time.Time // CIDR -> expiry
+	m      map[netip.Prefix]time.Time
 	config *Config
 }
 
 // NewPrefixDB creates a new prefix database.
 func NewPrefixDB(config *Config) *PrefixDB {
 	return &PrefixDB{
-		m:      make(map[string]time.Time),
+		m:      make(map[netip.Prefix]time.Time),
 		config: config,
 	}
 }
@@ -37,10 +38,19 @@ func (p *PrefixDB) Add(prefix *net.IPNet, valid time.Duration) {
 	if prefix == nil || valid <= 0 {
 		return
 	}
+
+	// Convert net.IPNet to netip.Prefix
+	addr, ok := netip.AddrFromSlice(prefix.IP)
+	if !ok {
+		return
+	}
+	ones, _ := prefix.Mask.Size()
+	netipPrefix := netip.PrefixFrom(addr, ones)
+
 	p.mu.Lock()
-	p.m[prefix.String()] = time.Now().Add(valid)
+	p.m[netipPrefix] = time.Now().Add(valid)
 	p.mu.Unlock()
-	p.config.DebugLog("RA prefix learned: %s (valid %s)", prefix, valid)
+	p.config.DebugLog("RA prefix learned: %s (valid %s)", netipPrefix, valid)
 }
 
 // Contains checks if an IP is within any valid prefix.
@@ -48,15 +58,20 @@ func (p *PrefixDB) Contains(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
+
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	now := time.Now()
-	for cidr, exp := range p.m {
+	for prefix, exp := range p.m {
 		if now.After(exp) {
 			continue
 		}
-		_, n, _ := net.ParseCIDR(cidr)
-		if n != nil && n.Contains(ip) {
+		if prefix.Contains(addr) {
 			return true
 		}
 	}
@@ -68,9 +83,9 @@ func (p *PrefixDB) Sweep() {
 	now := time.Now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for cidr, exp := range p.m {
+	for prefix, exp := range p.m {
 		if now.After(exp) {
-			delete(p.m, cidr)
+			delete(p.m, prefix)
 		}
 	}
 }
