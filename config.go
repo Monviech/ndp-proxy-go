@@ -56,18 +56,3 @@ func (c *Config) DebugLog(format string, args ...any) {
 		log.Printf(format, args...)
 	}
 }
-
-// Utility functions
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func ternary[T any](cond bool, a, b T) T {
-	if cond {
-		return a
-	}
-	return b
-}
