@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Cedrik Pischem
+// SPDX-License-Identifier: BSD-2-Clause
 //
 // port.go - Network interface abstraction with packet capture
 //

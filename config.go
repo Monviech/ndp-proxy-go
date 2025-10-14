@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Cedrik Pischem
+// SPDX-License-Identifier: BSD-2-Clause
 //
 // config.go - Runtime configuration from command-line flags
 //

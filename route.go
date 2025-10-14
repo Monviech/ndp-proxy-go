@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Cedrik Pischem
+// SPDX-License-Identifier: BSD-2-Clause
 //
 // route.go - FreeBSD per-host route management with rate limiting
 //

@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Cedrik Pischem
+// SPDX-License-Identifier: BSD-2-Clause
 //
 // cache.go - Neighbor discovery cache with expiry
 //

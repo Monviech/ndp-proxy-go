@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Cedrik Pischem
+// SPDX-License-Identifier: BSD-2-Clause
 //
 // hub.go - Core packet forwarding logic between upstream and downstream
 //

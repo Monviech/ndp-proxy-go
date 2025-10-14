@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Cedrik Pischem
+// SPDX-License-Identifier: BSD-2-Clause
 //
 // packet.go - ICMPv6 Neighbor Discovery packet parsing and building
 //
