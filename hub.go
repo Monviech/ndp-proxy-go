@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -68,7 +69,7 @@ type Hub struct {
 	Config *Config
 
 	muRouter  sync.RWMutex
-	routerLLA map[string]struct{} // Learned from RA source addresses
+	routerLLA map[netip.Addr]struct{} // Learned from RA source addresses
 	prefixDB  *PrefixDB
 
 	wg sync.WaitGroup
@@ -82,7 +83,7 @@ func NewHub(up *Port, down []*Port, cache *Cache, prefixDB *PrefixDB, config *Co
 		Cache:     cache,
 		Dedup:     &DedupCache{},
 		Config:    config,
-		routerLLA: make(map[string]struct{}),
+		routerLLA: make(map[netip.Addr]struct{}),
 		prefixDB:  prefixDB,
 	}
 }
@@ -243,10 +244,14 @@ func (h *Hub) rememberRouterLLA(ip net.IP) {
 	if ip == nil || !ip.IsLinkLocalUnicast() {
 		return
 	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return
+	}
 	h.muRouter.Lock()
-	h.routerLLA[ip.String()] = struct{}{}
+	h.routerLLA[addr] = struct{}{}
 	h.muRouter.Unlock()
-	h.Config.DebugLog("router LLA learned: %s", ip)
+	h.Config.DebugLog("router LLA learned: %s", addr)
 }
 
 // isRouterLLA checks if an IP is a known router link-local address.
@@ -254,8 +259,12 @@ func (h *Hub) isRouterLLA(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
 	h.muRouter.RLock()
 	defer h.muRouter.RUnlock()
-	_, ok := h.routerLLA[ip.String()]
+	_, ok = h.routerLLA[addr]
 	return ok
 }
