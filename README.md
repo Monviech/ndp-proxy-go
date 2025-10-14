@@ -108,5 +108,6 @@ See LICENSE file for details.
 
 ## References
 
-- [RFC 4861](https://www.rfc-editor.org/rfc/rfc4861.html) - Neighbor Discovery for IP version 6 (IPv6)
-- [RFC 4862](https://www.rfc-editor.org/rfc/rfc4862.html) - IPv6 Stateless Address Autoconfiguration
+- [RFC 4861](https://datatracker.ietf.org/doc/html/rfc4861) - Neighbor Discovery for IP version 6 (IPv6)
+- [RFC 4862](https://datatracker.ietf.org/doc/html/rfc4862) - IPv6 Stateless Address Autoconfiguration
+- [RFC 4389](https://datatracker.ietf.org/doc/html/rfc4389) - Neighbor Discovery Proxies (ND Proxy) - EXPERIMENTAL
