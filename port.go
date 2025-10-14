@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/google/gopacket/pcap"
 )
@@ -36,10 +37,19 @@ func OpenPort(name string) *Port {
 	}
 	defer ih.CleanUp()
 
-	_ = ih.SetSnapLen(65535)
+	_ = ih.SetSnapLen(1500) // Reduced from 65535 - we only need ND packets
 	_ = ih.SetPromisc(true)
-	_ = ih.SetTimeout(pcap.BlockForever)
-	_ = ih.SetImmediateMode(true)
+
+	// Use a longer timeout to reduce wakeup frequency
+	// ND packets are infrequent, so 250ms latency is acceptable
+	_ = ih.SetTimeout(250 * time.Millisecond)
+
+	// Increase buffer size to batch packets and reduce wakeups
+	_ = ih.SetBufferSize(4 * 1024 * 1024) // 4MB buffer
+
+	// DO NOT use immediate mode - it causes constant polling
+	// Let pcap batch packets naturally for better efficiency
+	// _ = ih.SetImmediateMode(true)  // Removed - causes high CPU usage
 
 	h, err := ih.Activate()
 	if err != nil {

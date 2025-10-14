@@ -45,18 +45,32 @@ func NewRouteWorker(qps, burst int) *RouteWorker {
 		r.tok <- struct{}{}
 	}
 
-	// Token refill goroutine
+	// Token refill goroutine - optimized to reduce timer wakeups
+	// Instead of waking 50 times/sec, wake 2 times/sec with 25 tokens each
 	go func() {
-		ticker := time.NewTicker(time.Second / time.Duration(max(qps, 1)))
+		if qps <= 0 {
+			qps = 1
+		}
+
+		// Refill every 500ms with qps/2 tokens (reduces timer frequency 25x)
+		refillInterval := 500 * time.Millisecond
+		tokensPerRefill := max(qps/2, 1)
+
+		ticker := time.NewTicker(refillInterval)
 		defer ticker.Stop()
+
 		for {
 			select {
 			case <-r.done:
 				return
 			case <-ticker.C:
-				select {
-				case r.tok <- struct{}{}:
-				default:
+				// Add multiple tokens per tick
+				for i := 0; i < tokensPerRefill; i++ {
+					select {
+					case r.tok <- struct{}{}:
+					default:
+						// Bucket full, skip
+					}
 				}
 			}
 		}
