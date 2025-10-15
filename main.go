@@ -1,3 +1,4 @@
+//
 // Copyright (c) 2025 Cedrik Pischem
 // SPDX-License-Identifier: BSD-2-Clause
 //
@@ -21,6 +22,9 @@ import (
 	"syscall"
 	"time"
 )
+
+// Version is set via ldflags at build time
+var Version = "dev"
 
 func main() {
 	config := ParseFlags()

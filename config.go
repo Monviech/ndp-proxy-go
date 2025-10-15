@@ -1,3 +1,4 @@
+//
 // Copyright (c) 2025 Cedrik Pischem
 // SPDX-License-Identifier: BSD-2-Clause
 //
@@ -11,7 +12,9 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
+	"os"
 	"time"
 )
 
@@ -39,6 +42,8 @@ func (c *Config) ShouldForwardType(icmpType uint8) bool {
 
 // ParseFlags parses command-line flags and returns a Config.
 func ParseFlags() *Config {
+	version := flag.Bool("version", false, "show version and exit")
+
 	cfg := &Config{}
 	flag.BoolVar(&cfg.NoRA, "no-ra", false, "disable forwarding of Router Advertisements (ICMPv6 type 134)")
 	flag.BoolVar(&cfg.NoRoutes, "no-routes", false, "disable per-host route installation and cleanup")
@@ -51,6 +56,12 @@ func ParseFlags() *Config {
 	flag.IntVar(&cfg.RouteBurst, "route-burst", 50, "burst of route operations allowed before limiting")
 	flag.DurationVar(&cfg.PcapTimeout, "pcap-timeout", 50*time.Millisecond, "packet capture timeout (lower = less latency, higher = less CPU)")
 	flag.Parse()
+
+	if *version {
+		fmt.Printf("ndp-proxy-go version %s\n", Version)
+		os.Exit(0)
+	}
+
 	return cfg
 }
 
