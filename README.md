@@ -1,41 +1,114 @@
-# ndp-proxy-go
+ndp-proxy-go
+==================
 
-**Experimental** - IPv6 Neighbor Discovery (ND) Proxy daemon for FreeBSD
+**Experimental** — IPv6 Neighbor Discovery (ND) Proxy daemon for FreeBSD
 
-## Overview
+**Note:** This is a personal project and has not been peer-reviewed.
 
-ndp-proxy-go transparently bridges IPv6 Neighbor Discovery (ND) and Router Advertisement (RA) messages between one upstream and one or more downstream Ethernet interfaces.
+---
 
-It allows downstream networks to obtain IPv6 addresses via SLAAC from an upstream router while keeping the upstream and downstream segments isolated at Layer 2.
+The Problem
+------------------
 
-The daemon listens for ICMPv6 packets of type Router Solicitation (133), Router Advertisement (134), Neighbor Solicitation (135), and Neighbor Advertisement (136), and forwards or synthesizes them as required.
+Modern IPv6 networks face challenges when using a FreeBSD host as a router between
+an ISP gateway and internal clients.
 
-## Key Features
+**Layer 2 Bridging Falls Short:**
+Bridging interfaces creates a flat network where all devices share the same subnet.
+This removes segmentation, prevents per-interface firewalling, and exposes clients
+directly to the ISP network.
 
-- **Transparent ND Bridging** - Multicast ND and RA traffic bridged between interfaces for cross-domain autoconfiguration
-- **Local NA Synthesis** - Proxies router LLA (downstream→upstream) and client global addresses (upstream→downstream)
-- **Automatic Route Management** - Installs per-host routes for learned neighbors with rate limiting
-- **Dynamic Prefix Learning** - Learns allowed prefixes from RA Prefix Information options with automatic expiry
-- **RFC 4861 Compliance** - Enforces HopLimit=255, recomputes checksums, validates packet structure
-- **Bootstrap RS** - Sends Router Solicitation on startup for immediate prefix discovery
-- **Safety Boundaries** - Never forwards link-local unicast traffic between interfaces
+**Layer 3 Routing Needs Prefix Delegation:**
+Most ISPs and cloud providers do **not** offer IPv6 prefix delegation (DHCPv6-PD).
+Without delegated prefixes, you cannot assign unique subnets to downstream
+interfaces, making traditional routing impossible.
 
-## Quick Start
+**Typical ISP Scenario:**
+Your ISP provides only a single /64 prefix via Router Advertisements. All devices—
+including your FreeBSD router and clients are expected to autoconfigure addresses
+within that prefix using SLAAC. You, however, want proper Layer 3 isolation and
+routing without relying on the ISP’s cooperation.
 
-### Prerequisites
-- FreeBSD with IPv6 routing enabled (`ipv6_gateway_enable="YES"`)
+---
+
+The Solution
+------------------
+
+``ndp-proxy-go`` enables **transparent Layer 3 routing that appears as Layer 2 bridging**
+to the upstream gateway. It makes downstream clients seem to reside on the same
+Ethernet segment as the ISP router while maintaining routing and firewall separation
+on the FreeBSD host.
+
+---
+
+How It Works
+------------------
+
+The daemon proxies and synthesizes IPv6 Neighbor Discovery messages, forwarding or
+responding as needed to maintain connectivity across isolated segments.
+
+1. **Bridges Router Advertisements** – Forwards RAs from the upstream router to
+   downstream interfaces, allowing SLAAC-based autoconfiguration.
+2. **Proxies Neighbor Discovery** – Relays or synthesizes NS/NA messages so peers
+   on different interfaces can reach each other transparently.
+3. **Installs Per-Host Routes** – Creates /128 routes for learned neighbors to
+   enable proper Layer 3 forwarding.
+4. **Validates Addresses** – Only proxies addresses within known prefixes.
+
+---
+
+Key Features
+------------------
+
+- **Transparent ND Bridging** – Bridges multicast ND and RA traffic between interfaces
+  to enable cross-segment SLAAC.
+- **Local NA Synthesis** – Responds locally for router and client addresses, hiding
+  network topology.
+- **Automatic Route Management** – Installs and updates per-host /128 routes with
+  rate limiting.
+- **Dynamic Prefix Learning** – Learns valid prefixes from Router Advertisements and
+  expires them automatically.
+- **Privacy Extension Support** – Handles temporary RFC 4941 addresses without loss
+  of connectivity.
+- **Multi-Segment Support** – Supports one upstream and multiple downstream
+  interfaces, each with separate firewall rules.
+- **RFC 4861 Compliance** – Validates HopLimit 255, checksums, and packet structure.
+- **Safety Boundaries** – Never forwards link-local unicast traffic.
+
+---
+
+Quick Start
+------------------
+
+**Prerequisites**
+
+- FreeBSD with IPv6 routing enabled (``ipv6_gateway_enable="YES"``)
 - Both interfaces must have link-local addresses
-- Upstream interface configured for SLAAC (`accept_rtadv`)
+- Upstream interface must accept Router Advertisements (``accept_rtadv``)
 - Upstream router must send RAs
-- Downstream clients must use this FreeBSD host as their router
+- Downstream clients must use the FreeBSD host as their router
 
-## Command-Line Usage
+---
 
-```
-ndp-proxy-go [flags] <up_if> <down_if1> [<down_if2> ...]
-```
+Installation
+------------------
 
-### Flags
+From Source:
+
+    git clone https://github.com/monviech/ndp-proxy-go.git
+    cd ndp-proxy-go
+    make install
+
+---
+
+Command-Line Usage
+------------------
+
+
+    ndp-proxy-go [flags] <up_if> <down_if1> [<down_if2> ...]
+
+Flags
+------------------
 
 | Flag | Description | Default |
 |------|-------------|---------|
@@ -50,67 +123,82 @@ ndp-proxy-go [flags] <up_if> <down_if1> [<down_if2> ...]
 | `--route-burst <n>` | Burst of route ops before limiting | 50 |
 | `--pcap-timeout <dur>` | Packet capture timeout (lower = less latency, higher = less CPU) | 50ms |
 
-**Performance Tuning:** The `--pcap-timeout` flag balances CPU usage vs NDP responsiveness. Lower values (25ms) minimize latency spikes during NDP refresh at the cost of slightly higher CPU usage. Higher values (100-250ms) reduce CPU usage but may cause occasional latency spikes (up to 500ms) when neighbor cache entries expire.
 
-### Examples
+Performance Tuning
+------------------
 
-```bash
-# Basic usage
-sudo ndp-proxy-go igc1 igc0
+``--pcap-timeout`` controls CPU usage vs. NDP responsiveness.
+Lower values (e.g., 25 ms) minimize latency during cache refresh at the cost of more CPU.
+Higher values (100–250 ms) reduce CPU use but may introduce small latency spikes.
 
-# With debug logging
-sudo ndp-proxy-go --debug igc1 igc0
 
-# Multiple downstream interfaces
-sudo ndp-proxy-go igc1 igc0 igc2 igc3
+Examples
+------------------
 
-# Custom cache settings
-sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 igc1 igc0
-```
 
-## How It Works
+    # Basic usage
+    sudo ndp-proxy-go igc1 igc0
 
-### Packet Flow
+    # With debug logging
+    sudo ndp-proxy-go --debug igc1 igc0
 
-**Downstream → Upstream (Client to Router)**
-1. Client sends RS/NS toward upstream router
-2. ndp-proxy-go learns client's global IPv6 + MAC
-3. Installs per-host route for return traffic
-4. Forwards packet upstream (rewrites SLLA)
-5. If NS targets router's LLA: synthesizes local NA
+    # Multiple downstream interfaces
+    sudo ndp-proxy-go igc1 igc0 igc2 igc3
 
-**Upstream → Downstream (Router to Client)**
-1. Router sends RA/NA packets
-2. ndp-proxy-go learns router LLA and prefixes from RA
-3. Forwards multicast RA to all downstream interfaces
-4. If NS targets client global IP: synthesizes local NA on uplink
-5. Unicast packets routed to specific downstream port
+    # Custom cache settings
+    sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 igc1 igc0
 
-### Components
 
-```
-ndp-proxy-go/
-│
-├── hub.go        Core forwarding engine - bridges NDP between segments
-├── packet.go     Parse/validate/build ICMPv6 ND packets per RFC 4861
-├── cache.go      Learn and track client IP→MAC→port mappings
-├── main.go       Entry point - orchestrates startup and shutdown
-├── port.go       PCAP interface wrapper with BPF filtering
-├── config.go     Command-line flags and runtime configuration
-├── route.go      Install per-host /128 routes (optional feature)
-└── prefix.go     Track RA prefixes for address validation (security)
-```
+Packet Flow
+------------------
 
-## License
+## Downstream → Upstream (Client to Router)
+
+1. Client sends RS/NS toward upstream router.
+2. ``ndp-proxy-go`` learns the client’s IPv6 and MAC address.
+3. Installs per-host route for return traffic.
+4. Forwards packet upstream (rewriting SLLA).
+5. Synthesizes NA if NS targets the router’s LLA.
+
+## Upstream → Downstream (Router to Client)
+
+1. Router sends RA/NA packets.
+2. ``ndp-proxy-go`` learns router LLA and prefixes from RA.
+3. Forwards multicast RAs to all downstream interfaces.
+4. Synthesizes NA upstream if NS targets a downstream client.
+5. Routes unicast packets to the correct downstream interface.
+
+
+Code Structure
+------------------
+
+
+    ndp-proxy-go/
+    ├── hub.go        – Core forwarding engine bridging NDP between interfaces
+    ├── packet.go     – Parse/validate/build ICMPv6 ND packets (RFC 4861)
+    ├── cache.go      – Track client IP → MAC → interface mappings
+    ├── main.go       – Entry point for startup and shutdown
+    ├── port.go       – PCAP interface wrapper with BPF filtering
+    ├── config.go     – Command-line flags and runtime configuration
+    ├── route.go      – Install per-host /128 routes (optional)
+    └── prefix.go     – Track and validate prefixes from Router Advertisements
+
+
+License
+------------------
 
 BSD 2-Clause License
 
 Copyright (c) 2025 Cedrik Pischem
 
-See LICENSE file for details.
+See ``LICENSE`` for details.
 
-## References
+---
 
-- [RFC 4861](https://datatracker.ietf.org/doc/html/rfc4861) - Neighbor Discovery for IP version 6 (IPv6)
-- [RFC 4862](https://datatracker.ietf.org/doc/html/rfc4862) - IPv6 Stateless Address Autoconfiguration
-- [RFC 4389](https://datatracker.ietf.org/doc/html/rfc4389) - Neighbor Discovery Proxies (ND Proxy) - EXPERIMENTAL
+References
+------------------
+
+- RFC 4861 – Neighbor Discovery for IPv6
+- RFC 4862 – IPv6 Stateless Address Autoconfiguration
+- RFC 4389 – Neighbor Discovery Proxies (Experimental)
+- RFC 4941 – Privacy Extensions for SLAAC
