@@ -183,7 +183,7 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 			}
 
 			ndPkt := ParseNDPacket(pkt)
-			if ndPkt == nil || !h.Config.ShouldForwardType(ndPkt.Type()) {
+			if ndPkt == nil {
 				continue
 			}
 
@@ -193,12 +193,17 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 				continue
 			}
 
-			// RA: learn router LLA and prefixes
+			// RA: learn router LLA and prefixes (always, regardless of forwarding)
 			if ndPkt.Type() == layers.ICMPv6TypeRouterAdvertisement {
 				h.rememberRouterLLA(ndPkt.ipv6.SrcIP)
 				for _, pi := range ndPkt.ParseRAPrefixes() {
 					h.prefixDB.Add(pi.Net, pi.Valid)
 				}
+			}
+
+			// Check if we should forward this type (may skip forwarding but we already learned)
+			if !h.Config.ShouldForwardType(ndPkt.Type()) {
+				continue
 			}
 
 			// Proxy client global NA locally on uplink
