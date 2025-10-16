@@ -27,6 +27,10 @@ import (
 var Version = "dev"
 
 func main() {
+	// Set consistent prefix and remove timestamp (syslog adds its own)
+	log.SetPrefix("ndp-proxy-go: ")
+	log.SetFlags(0)
+
 	config := ParseFlags()
 	args := flag.Args()
 
@@ -48,7 +52,7 @@ func main() {
 	}
 
 	// Initialize route worker
-	rtw := NewRouteWorker(config.RouteQPS, config.RouteBurst)
+	rtw := NewRouteWorker(config.RouteQPS, config.RouteBurst, config)
 	defer rtw.Stop()
 
 	// Initialize prefix database and cache
@@ -82,23 +86,23 @@ func main() {
 		}
 	}()
 
-	log.Printf("ndp-proxy-go: up=%s down=%s (no-ra=%v no-routes=%v rewrite-lla=%v debug=%v)",
-		up.Name, strings.Join(args[1:], ","), config.NoRA, config.NoRoutes, !config.NoRewrite, config.Debug)
+	log.Printf("up=%s down=%s (no-ra=%v no-routes=%v rewrite-lla=%v pcap-timeout=%v debug=%v)",
+		up.Name, strings.Join(args[1:], ","), config.NoRA, config.NoRoutes, !config.NoRewrite, config.PcapTimeout, config.Debug)
 
 	hub.Start(ctx)
 
 	// Trigger initial Router Solicitation to learn prefixes immediately
 	if up.LLA != nil {
-		log.Printf("ndp-proxy-go: sending Router Solicitation on %s to bootstrap prefix learning", up.Name)
+		log.Printf("sending Router Solicitation on %s to bootstrap prefix learning", up.Name)
 		if err := SendRouterSolicitation(up); err != nil {
-			log.Printf("ndp-proxy-go: warning - failed to send initial RS: %v", err)
+			log.Printf("warning - failed to send initial RS: %v", err)
 		}
 	}
 
 	// Graceful shutdown
 	go func() {
 		<-sig
-		log.Printf("ndp-proxy-go: shutting down...")
+		log.Printf("shutting down...")
 		stop()
 	}()
 
@@ -109,5 +113,5 @@ func main() {
 		cache.CleanupAll()
 	}
 
-	log.Printf("ndp-proxy-go: exit clean")
+	log.Printf("exit clean")
 }

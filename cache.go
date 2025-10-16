@@ -84,7 +84,7 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 	if old, ok := c.m[addr]; ok && now.Before(old.Exp) {
 		old.Exp = expire
 		c.m[addr] = old
-		c.config.DebugLog("refreshed %s on %s (port %d)", addr, ifn, port)
+		c.config.DebugLog("cache entry TTL refreshed %s on %s (port %d)", addr, ifn, port)
 		return
 	}
 

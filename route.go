@@ -36,14 +36,16 @@ type RouteWorker struct {
 	ch      chan routeOp
 	limiter *rate.Limiter
 	done    chan struct{}
+	config  *Config
 }
 
 // NewRouteWorker creates a rate-limited route worker.
-func NewRouteWorker(qps, burst int) *RouteWorker {
+func NewRouteWorker(qps, burst int, config *Config) *RouteWorker {
 	r := &RouteWorker{
 		ch:      make(chan routeOp, 4096),
 		limiter: rate.NewLimiter(rate.Limit(qps), burst),
 		done:    make(chan struct{}),
+		config:  config,
 	}
 
 	// Worker goroutine
@@ -60,19 +62,24 @@ func NewRouteWorker(qps, burst int) *RouteWorker {
 
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				var cmd *exec.Cmd
+				action := "delete"
 				if op.add {
+					action = "add"
 					cmd = exec.CommandContext(ctx, "/sbin/route", "-6", "add", "-host", op.ip, "-iface", op.iface)
 				} else {
 					cmd = exec.CommandContext(ctx, "/sbin/route", "-6", "delete", "-host", op.ip)
 				}
 				out, err := cmd.CombinedOutput()
 				cancel()
+
 				if err != nil {
-					action := "delete"
-					if op.add {
-						action = "add"
-					}
 					log.Printf("route %s err: %v (out: %s)", action, err, strings.TrimSpace(string(out)))
+				} else {
+					if op.add {
+						r.config.DebugLog("route installed: %s via %s", op.ip, op.iface)
+					} else {
+						r.config.DebugLog("route deleted: %s", op.ip)
+					}
 				}
 			}
 		}
