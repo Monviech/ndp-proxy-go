@@ -44,24 +44,16 @@ on the FreeBSD host.
 How It Works
 ------------------
 
-The daemon proxies and synthesizes IPv6 Neighbor Discovery messages, forwarding or
-responding as needed to maintain connectivity across isolated segments.
+The daemon proxies and synthesizes IPv6 Neighbor Discovery and Router Advertisement messages,
+forwarding or responding as needed to maintain connectivity across isolated segments.
 
-1. **Bridges Router Advertisements** – Forwards RAs from the upstream router to
-   downstream interfaces, allowing SLAAC-based autoconfiguration.
-2. **Proxies Neighbor Discovery** – Relays or synthesizes NS/NA messages so peers
-   on different interfaces can reach each other transparently.
-3. **Installs Per-Host Routes** – Creates /128 routes for learned neighbors to
-   enable proper Layer 3 forwarding.
-4. **Validates Addresses** – Only proxies addresses within known prefixes.
-
----
 
 Key Features
 ------------------
 
-- **Transparent ND Bridging** – Bridges multicast ND and RA traffic between interfaces
+- **Transparent Control Plane Bridging** – Bridges multicast ND and RA traffic between interfaces
   to enable cross-segment SLAAC.
+- **Modify RA** - Can replace the RDNSS, DNSSL, and flags.
 - **Local NA Synthesis** – Responds locally for router and client addresses, hiding
   network topology.
 - **Automatic Route Management** – Installs and updates per-host /128 routes with
@@ -71,7 +63,7 @@ Key Features
 - **Privacy Extension Support** – Handles temporary RFC 4941 addresses without loss
   of connectivity.
 - **Multi-Segment Support** – Supports one upstream and multiple downstream
-  interfaces, each with separate firewall rules.
+  interfaces.
 - **RFC 4861 Compliance** – Validates HopLimit 255, checksums, and packet structure.
 - **Safety Boundaries** – Never forwards link-local unicast traffic.
 
@@ -132,6 +124,43 @@ Lower values (e.g., 25 ms) minimize latency during cache refresh at the cost of 
 Higher values (100–250 ms) reduce CPU use but may introduce small latency spikes.
 
 
+RA Modification
+------------------
+
+Modify forwarded RAs to override ISP settings. Useful when the ISP sends incorrect
+flags or no DNS options.
+
+Syntax:
+
+
+    --ra-modify <interface>:key=value
+
+
+Keys:
+
+    `flags=` replaces ISP's flags byte
+    `rdnss=` replaces ISP's DNS servers
+    `dnssl=` replaces ISP's search domains
+
+
+Set M and O flags for DHCPv6:
+
+    --ra-modify igc0:flags=0xC0
+
+
+Add Google DNS:
+
+    --ra-modify igc0:rdnss=2001:4860:4860::8888
+
+
+Multiple options:
+
+    --ra-modify igc0:flags=0xC0 \
+    --ra-modify igc0:rdnss=2001:4860:4860::8888 \
+    --ra-modify igc0:rdnss=2001:4860:4860::8844 \
+    --ra-modify igc0:dnssl=home.arpa
+
+
 Examples
 ------------------
 
@@ -147,6 +176,9 @@ Examples
 
     # Custom cache settings
     sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 igc1 igc0
+
+    # Custom RA options
+    sudo ndp-proxy-go --ra-modify igc0:rdnss=2001:4860:4860::8888 --ra-modify igc0:dnssl=home.arpa igc1 igc0
 
 
 Packet Flow
@@ -175,7 +207,7 @@ Code Structure
 
     ndp-proxy-go/
     ├── hub.go        – Core forwarding engine bridging NDP between interfaces
-    ├── packet.go     – Parse/validate/build ICMPv6 ND packets (RFC 4861)
+    ├── packet.go     – Parse/validate/build ICMPv6 ND and RA packets (RFC 4861)
     ├── cache.go      – Track client IP → MAC → interface mappings
     ├── main.go       – Entry point for startup and shutdown
     ├── port.go       – PCAP interface wrapper with BPF filtering

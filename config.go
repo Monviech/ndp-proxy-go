@@ -40,8 +40,8 @@ func (c *Config) ShouldForwardType(icmpType uint8) bool {
 	return icmpType >= 133 && icmpType <= 136
 }
 
-// ParseFlags parses command-line flags and returns a Config.
-func ParseFlags() *Config {
+// ParseFlags parses command-line flags and returns Config and RA modification specs.
+func ParseFlags() (*Config, []string) {
 	version := flag.Bool("version", false, "show version and exit")
 
 	cfg := &Config{}
@@ -55,6 +55,14 @@ func ParseFlags() *Config {
 	flag.IntVar(&cfg.RouteQPS, "route-qps", 50, "max /sbin/route operations per second (rate limited)")
 	flag.IntVar(&cfg.RouteBurst, "route-burst", 50, "burst of route operations allowed before limiting")
 	flag.DurationVar(&cfg.PcapTimeout, "pcap-timeout", 50*time.Millisecond, "packet capture timeout (lower = less latency, higher = less CPU)")
+
+	// Parse RA modification flags
+	var raModifySpecs []string
+	flag.Func("ra-modify", "Modify RAs per interface: iface:key:value (key: flags, rdnss, dnssl)", func(s string) error {
+		raModifySpecs = append(raModifySpecs, s)
+		return nil
+	})
+
 	flag.Parse()
 
 	if *version {
@@ -62,7 +70,7 @@ func ParseFlags() *Config {
 		os.Exit(0)
 	}
 
-	return cfg
+	return cfg, raModifySpecs
 }
 
 // DebugLog logs a message only if debug mode is enabled.

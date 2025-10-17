@@ -7,6 +7,7 @@
 // Parses ND packets (NS, NA, RS, RA) with RFC 4861 validation (HLIM=255, no
 // extension headers). Builds proxy NA and RS packets using gopacket layers.
 // Sanitizes packets by rewriting link-layer options to egress interface MAC.
+// Modifies RAs in-flight with per-interface flags and RDNSS/DNSSL options.
 //
 // Core NDP proxy function requires understanding packet structure to make
 // forwarding decisions (target addresses, flags, options) and constructing
@@ -20,6 +21,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/google/gopacket"
@@ -165,14 +167,17 @@ func (p *NDPacket) ParseRAPrefixes() []RAPrefix {
 	return result
 }
 
-// Sanitize normalizes the packet: HLIM=255, optionally rewrite LLA options.
+// Sanitize normalizes the packet: HLIM=255, optionally rewrite LLA options, modify RA.
 func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
-	if !rewriteOpts {
-		// No rewriting needed, just return a copy
+	// Check if this is an RA that needs modification
+	needsRAModify := p.Type() == layers.ICMPv6TypeRouterAdvertisement && egress.RAModify != nil
+
+	if !rewriteOpts && !needsRAModify {
+		// No rewriting or modification needed, just return a copy
 		return append([]byte(nil), p.raw...)
 	}
 
-	// Rebuild the packet with rewritten options
+	// Rebuild the packet with potential modifications
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{
 		FixLengths:       true,
@@ -199,27 +204,40 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 		return append([]byte(nil), p.raw...)
 	}
 
-	// Get the specific ND layer and rewrite options if needed
+	// Get the specific ND layer and rewrite/modify if needed
 	var ndLayer gopacket.SerializableLayer
 
 	switch p.Type() {
 	case layers.ICMPv6TypeRouterAdvertisement:
 		if raLayer := p.getLayer(layers.LayerTypeICMPv6RouterAdvertisement); raLayer != nil {
 			ra := raLayer.(*layers.ICMPv6RouterAdvertisement)
-			// Rewrite source link-layer address option
-			ra.Options = rewriteOptions(ra.Options, egress.HW, layers.ICMPv6OptSourceAddress)
+
+			// Modify RA if config exists for this interface
+			if egress.RAModify != nil {
+				ra = modifyRA(ra, egress.RAModify)
+			}
+
+			// Rewrite source link-layer address option if requested
+			if rewriteOpts {
+				ra.Options = rewriteOptions(ra.Options, egress.HW, layers.ICMPv6OptSourceAddress)
+			}
+
 			ndLayer = ra
 		}
 	case layers.ICMPv6TypeNeighborSolicitation:
 		if nsLayer := p.getLayer(layers.LayerTypeICMPv6NeighborSolicitation); nsLayer != nil {
 			ns := nsLayer.(*layers.ICMPv6NeighborSolicitation)
-			ns.Options = rewriteOptions(ns.Options, egress.HW, layers.ICMPv6OptSourceAddress)
+			if rewriteOpts {
+				ns.Options = rewriteOptions(ns.Options, egress.HW, layers.ICMPv6OptSourceAddress)
+			}
 			ndLayer = ns
 		}
 	case layers.ICMPv6TypeNeighborAdvertisement:
 		if naLayer := p.getLayer(layers.LayerTypeICMPv6NeighborAdvertisement); naLayer != nil {
 			na := naLayer.(*layers.ICMPv6NeighborAdvertisement)
-			na.Options = rewriteOptions(na.Options, egress.HW, layers.ICMPv6OptTargetAddress)
+			if rewriteOpts {
+				na.Options = rewriteOptions(na.Options, egress.HW, layers.ICMPv6OptTargetAddress)
+			}
 			ndLayer = na
 		}
 	default:
@@ -242,6 +260,86 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 	}
 
 	return buf.Bytes()
+}
+
+// modifyRA modifies an RA according to per-interface configuration.
+func modifyRA(ra *layers.ICMPv6RouterAdvertisement, cfg *RAModifyConfig) *layers.ICMPv6RouterAdvertisement {
+	modified := &layers.ICMPv6RouterAdvertisement{
+		HopLimit:       ra.HopLimit,
+		Flags:          ra.Flags,
+		RouterLifetime: ra.RouterLifetime,
+		ReachableTime:  ra.ReachableTime,
+		RetransTimer:   ra.RetransTimer,
+		Options:        make(layers.ICMPv6Options, 0, len(ra.Options)),
+	}
+
+	// Copy options except RDNSS/DNSSL if we're replacing them
+	hasRDNSS := len(cfg.AddRDNSS) > 0
+	hasDNSSL := len(cfg.AddDNSSL) > 0
+
+	for _, opt := range ra.Options {
+		if (opt.Type == 25 && hasRDNSS) || (opt.Type == 31 && hasDNSSL) {
+			// Skip ISP's DNS options - we're replacing them
+			continue
+		}
+		modified.Options = append(modified.Options, opt)
+	}
+
+	// Replace flags if specified
+	if cfg.RawFlags != nil {
+		modified.Flags = *cfg.RawFlags
+	}
+
+	// Add our RDNSS options
+	for _, dns := range cfg.AddRDNSS {
+		if opt := buildRDNSSOption(dns); opt.Type != 0 {
+			modified.Options = append(modified.Options, opt)
+		}
+	}
+
+	// Add our DNSSL options
+	for _, domain := range cfg.AddDNSSL {
+		if opt := buildDNSSLOption(domain); opt.Type != 0 {
+			modified.Options = append(modified.Options, opt)
+		}
+	}
+
+	return modified
+}
+
+// buildRDNSSOption creates an RDNSS option (RFC 8106, type 25).
+func buildRDNSSOption(dns net.IP) layers.ICMPv6Option {
+	ip := dns.To16()
+	if ip == nil {
+		return layers.ICMPv6Option{}
+	}
+	data := make([]byte, 22)                    // 2 (reserved) + 4 (lifetime) + 16 (address)
+	binary.BigEndian.PutUint32(data[2:6], 3600) // 1 hour
+	copy(data[6:22], ip)
+	return layers.ICMPv6Option{Type: 25, Data: data}
+}
+
+// buildDNSSLOption creates a DNSSL option (RFC 8106, type 31).
+func buildDNSSLOption(domain string) layers.ICMPv6Option {
+	var encoded []byte
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) == 0 || len(label) > 63 {
+			return layers.ICMPv6Option{}
+		}
+		encoded = append(encoded, byte(len(label)))
+		encoded = append(encoded, []byte(label)...)
+	}
+	encoded = append(encoded, 0) // null terminator
+
+	// Pad to 8-byte boundary
+	totalLen := 2 + 4 + len(encoded) // reserved + lifetime + name
+	padding := (8 - (totalLen % 8)) % 8
+
+	data := make([]byte, totalLen-2+padding)    // -2 for type/length
+	binary.BigEndian.PutUint32(data[2:6], 3600) // 1 hour
+	copy(data[6:], encoded)
+
+	return layers.ICMPv6Option{Type: 31, Data: data}
 }
 
 // rewriteOptions replaces link-layer addresses in ND options
@@ -389,4 +487,74 @@ func SendRouterSolicitation(port *Port) error {
 // isMulticastEther returns true if the Ethernet destination is multicast.
 func isMulticastEther(e *layers.Ethernet) bool {
 	return len(e.DstMAC) > 0 && (e.DstMAC[0]&1) == 1
+}
+
+// ParseRAModifySpecs parses RA modification specs: iface:key=value
+func ParseRAModifySpecs(specs []string) map[string]*RAModifyConfig {
+	result := make(map[string]*RAModifyConfig)
+
+	for _, spec := range specs {
+		// Split on first : to get interface
+		firstColon := strings.Index(spec, ":")
+		if firstColon == -1 {
+			continue
+		}
+
+		iface := spec[:firstColon]
+		rest := spec[firstColon+1:]
+
+		// Split on = to get key and value
+		eqIdx := strings.Index(rest, "=")
+		if eqIdx == -1 {
+			continue
+		}
+
+		key := rest[:eqIdx]
+		val := rest[eqIdx+1:]
+
+		if result[iface] == nil {
+			result[iface] = &RAModifyConfig{}
+		}
+		cfg := result[iface]
+
+		switch key {
+		case "flags":
+			if v, err := parseByteValue(val); err == nil {
+				cfg.RawFlags = &v
+			}
+		case "rdnss":
+			if ip := net.ParseIP(val); ip != nil {
+				cfg.AddRDNSS = append(cfg.AddRDNSS, ip)
+			}
+		case "dnssl":
+			if val != "" {
+				cfg.AddDNSSL = append(cfg.AddDNSSL, val)
+			}
+		}
+	}
+
+	return result
+}
+
+// parseByteValue parses hex (0xNN) or decimal string to uint8
+func parseByteValue(s string) (uint8, error) {
+	s = strings.TrimSpace(s)
+	base := 10
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		s = s[2:]
+		base = 16
+	}
+
+	var v uint64
+	var err error
+	if base == 16 {
+		_, err = fmt.Sscanf(s, "%x", &v)
+	} else {
+		_, err = fmt.Sscanf(s, "%d", &v)
+	}
+
+	if err != nil || v > 255 {
+		return 0, fmt.Errorf("invalid")
+	}
+	return uint8(v), nil
 }

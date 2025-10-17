@@ -22,13 +22,21 @@ import (
 	"github.com/google/gopacket/pcap"
 )
 
+// RAModifyConfig holds per-interface RA modification settings.
+type RAModifyConfig struct {
+	RawFlags *uint8   // nil = don't modify; otherwise replaces all 8 flag bits
+	AddRDNSS []net.IP // append these DNS servers
+	AddDNSSL []string // append these search domains
+}
+
 // Port represents a network interface with its PCAP handle and addressing info.
 type Port struct {
-	Name string
-	HW   net.HardwareAddr
-	LLA  net.IP // Link-local address (fe80::) for this interface
-	H    *pcap.Handle
-	wmu  sync.Mutex // Serialize PCAP writes
+	Name     string
+	HW       net.HardwareAddr
+	LLA      net.IP // Link-local address (fe80::) for this interface
+	H        *pcap.Handle
+	wmu      sync.Mutex      // Serialize PCAP writes
+	RAModify *RAModifyConfig // nil = no RA modification
 }
 
 // OpenPort opens a network interface for packet capture with strict ND filtering.
