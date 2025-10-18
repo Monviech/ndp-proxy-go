@@ -205,9 +205,13 @@ Code Structure
 ------------------
 
 
+Code Structure
+------------------
+
     ndp-proxy-go/
     ├── hub.go        – Core forwarding engine bridging NDP between interfaces
-    ├── packet.go     – Parse/validate/build ICMPv6 ND and RA packets (RFC 4861)
+    ├── packet_nd.go  – Parse/validate/build ICMPv6 ND packets (NS, NA) (RFC 4861)
+    ├── packet_ra.go  – Parse/modify RA, RS, bit flags and DNS options (RFC 4861, RFC 8106)
     ├── cache.go      – Track client IP → MAC → interface mappings
     ├── main.go       – Entry point for startup and shutdown
     ├── port.go       – PCAP interface wrapper with BPF filtering
@@ -234,3 +238,4 @@ References
 - RFC 4862 – IPv6 Stateless Address Autoconfiguration
 - RFC 4389 – Neighbor Discovery Proxies (Experimental)
 - RFC 4941 – Privacy Extensions for SLAAC
+- RFC 8106 - IPv6 Router Advertisement Options for DNS Configuration

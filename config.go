@@ -58,7 +58,7 @@ func ParseFlags() (*Config, []string) {
 
 	// Parse RA modification flags
 	var raModifySpecs []string
-	flag.Func("ra-modify", "Modify RAs per interface: iface:key:value (key: flags, rdnss, dnssl)", func(s string) error {
+	flag.Func("ra-modify", "Modify RAs per interface: iface:key=value (key: flags, rdnss, dnssl)", func(s string) error {
 		raModifySpecs = append(raModifySpecs, s)
 		return nil
 	})
