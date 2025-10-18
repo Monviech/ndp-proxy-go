@@ -200,11 +200,6 @@ Packet Flow
 4. Synthesizes NA upstream if NS targets a downstream client.
 5. Routes unicast packets to the correct downstream interface.
 
-
-Code Structure
-------------------
-
-
 Code Structure
 ------------------
 
