@@ -47,14 +47,6 @@ How It Works
 The daemon proxies and synthesizes IPv6 Neighbor Discovery messages, forwarding or
 responding as needed to maintain connectivity across isolated segments.
 
-1. **Bridges Router Advertisements** – Forwards RAs from the upstream router to
-   downstream interfaces, allowing SLAAC-based autoconfiguration.
-2. **Proxies Neighbor Discovery** – Relays or synthesizes NS/NA messages so peers
-   on different interfaces can reach each other transparently.
-3. **Installs Per-Host Routes** – Creates /128 routes for learned neighbors to
-   enable proper Layer 3 forwarding.
-4. **Validates Addresses** – Only proxies addresses within known prefixes.
-
 ---
 
 Key Features
@@ -183,6 +175,78 @@ Code Structure
     ├── route.go      – Install per-host /128 routes (optional)
     └── prefix.go     – Track and validate prefixes from Router Advertisements
 
+
+Example combination of ndp-proxy-go with radvd
+-----------------------------------------------
+
+In some networks, running your own policies could be a requirement.
+
+For this, `ndp-proxy-go` can be combined with `radvd` to generate your own RAs to e.g. send custom flags or options.
+
+https://man.freebsd.org/cgi/man.cgi?query=radvd
+
+Here is a short example:
+
+- eth0 = WAN interface
+- eth1 = LAN1 interface
+- eth2 = LAN2 interface
+
+Run `ndp-proxy-go` without proxying RAs:
+
+CLI:
+```
+sudo ndp-proxy-go --no-ra eth0 eth1 eth2
+```
+
+Service script:
+```
+# /etc/rc.conf.d/ndp_proxy_go 
+
+ndp_proxy_go_enable="YES"
+ndp_proxy_go_upstream="eth0"
+ndp_proxy_go_downstream="eth1 eth2"
+ndp_proxy_go_flags="--no-ra"
+```
+
+Run a `radvd` configuration that tracks the WAN interface and sends the same prefix on all LAN interfaces:
+
+```
+# /usr/local/etc/radvd.conf
+# Mirror WAN prefix (eth0) on all LANs (eth1/eth2) and advertise DNS server
+
+# WAN (eth0)
+interface eth0 {
+    AdvSendAdvert off;
+};
+
+# LAN 1 (eth1)
+interface eth1 {
+    AdvSendAdvert on;
+    MaxRtrAdvInterval 30;
+
+    prefix ::/64 {
+        Base6Interface eth0;
+        AdvOnLink on;
+        AdvAutonomous on;
+    };
+
+    RDNSS 2001:4860:4860::8888 2001:4860:4860::8844 {
+        AdvRDNSSLifetime 600;
+    };
+};
+
+# LAN 2 (eth2)
+interface eth2 {
+    AdvSendAdvert on;
+    MaxRtrAdvInterval 30;
+
+    prefix ::/64 {
+        Base6Interface eth0;
+        AdvOnLink on;
+        AdvAutonomous on;
+    };
+};
+```
 
 License
 ------------------
