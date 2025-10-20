@@ -8,10 +8,22 @@
 // traffic, distributes RAs and proxies NAs for upstream→down. Implements
 // deduplication, router LLA tracking, and selective unicast/multicast handling.
 //
+// Router Advertisements (RAs) from upstream are learned (router link-local
+// address + prefixes) and multicast to all downstream interfaces to enable
+// SLAAC. Neighbor Solicitations (NSs) targeting router LLA are answered locally
+// to reduce upstream traffic. NSs targeting downstream clients are answered
+// upstream with synthesized Neighbor Advertisements (NAs).
+//
+// Duplicate Address Detection (DAD) is proxied between all interfaces
+// to prevent address conflicts. When a DAD NS arrives, the cache is checked
+// for conflicts and an immediate NA is sent if found. Otherwise, the DAD probe
+// is forwarded and any NA response is relayed back, ensuring address uniqueness
+// across isolated segments.
+//
 // This is the actual NDP proxy - the "hub" that makes isolated L2 segments
 // appear as a single link for ND purposes. Without this, clients can't discover
 // the router (no RAs) and the router can't discover clients (NS fails across
-// segment boundaries). Proxying NAs locally reduces upstream traffic.
+// segment boundaries).
 //
 
 package main
@@ -140,25 +152,55 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 				continue
 			}
 
-			// Learn source (skip DAD probes)
+			// Learn source (skip DAD probes - they have :: source)
 			if !ndPkt.IsDAD() {
 				h.Cache.Learn(ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, idx, src.Name)
 			}
 
-			// Drop DAD NS upstream unless explicitly allowed
-			if ndPkt.IsDAD() && !h.Config.AllowDAD {
-				continue
-			}
-
-			// Proxy router LLA locally (NS for router's fe80:: target)
+			// Handle Neighbor Solicitation
 			if ndPkt.Type() == layers.ICMPv6TypeNeighborSolicitation {
-				if tgt := ndPkt.Target(); tgt != nil && h.isRouterLLA(tgt) {
+				tgt := ndPkt.Target()
+
+				// DAD NS handling
+				if ndPkt.IsDAD() {
+					if h.Config.NoDAD {
+						h.Config.DebugLog("dropping DAD NS (target %s) - no-dad enabled", tgt)
+						continue
+					}
+
+					// Check if target exists on another downstream interface
+					if tgt != nil {
+						if n, ok := h.Cache.Lookup(tgt); ok && n.Port != idx {
+							// Address conflict! Send NA to all-nodes multicast
+							allNodes := net.ParseIP("ff02::1")
+							allNodesMAC := net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0x01}
+							if na := BuildNA(src, allNodes, allNodesMAC, tgt, false); na != nil {
+								src.Write(na, src.HW, allNodesMAC)
+								h.Config.DebugLog("DAD conflict: %s exists on %s (port %d), sent NA to all-nodes", tgt, n.If, n.Port)
+								continue
+							}
+						}
+					}
+
+					h.Config.DebugLog("proxying DAD NS (target %s) to upstream", tgt)
+					// Fall through to forward upstream
+				}
+
+				// Regular NS: proxy router LLA locally
+				if !ndPkt.IsDAD() && tgt != nil && h.isRouterLLA(tgt) {
 					if na := BuildNA(src, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, true); na != nil {
 						src.Write(na, src.HW, ndPkt.eth.SrcMAC)
 						h.Config.DebugLog("proxied NA (router LLA %s) -> %s on %s", tgt, ndPkt.ipv6.SrcIP, src.Name)
 						continue
 					}
 				}
+			}
+
+			// Handle Neighbor Advertisement from downstream
+			// Forward NA upstream (including DAD responses) so upstream devices can see downstream addresses
+			if ndPkt.Type() == layers.ICMPv6TypeNeighborAdvertisement && !h.Config.NoDAD {
+				h.Config.DebugLog("forwarding NA from %s (target %s) to upstream", src.Name, ndPkt.Target())
+				// Fall through to forward upstream
 			}
 
 			// Forward to upstream
@@ -208,7 +250,29 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 
 			// Proxy client global NA locally on uplink
 			if ndPkt.Type() == layers.ICMPv6TypeNeighborSolicitation {
-				if tgt := ndPkt.Target(); tgt != nil && !tgt.IsLinkLocalUnicast() {
+				tgt := ndPkt.Target()
+
+				// DAD NS from upstream: check if target conflicts with downstream clients
+				if ndPkt.IsDAD() && !h.Config.NoDAD {
+					if tgt != nil {
+						// Check if any downstream client owns this address
+						if n, ok := h.Cache.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(h.Down) {
+							// Respond immediately to protect downstream client
+							allNodes := net.ParseIP("ff02::1")
+							allNodesMAC := net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0x01}
+							if na := BuildNA(h.Up, allNodes, allNodesMAC, tgt, false); na != nil {
+								h.Up.Write(na, h.Up.HW, allNodesMAC)
+								h.Config.DebugLog("DAD conflict: upstream wants %s but exists on %s (port %d)", tgt, n.If, n.Port)
+								continue
+							}
+						}
+					}
+					h.Config.DebugLog("forwarding DAD NS from upstream (target %s) to downstream", tgt)
+					// Fall through to forward to downstream
+				}
+
+				// Regular NS: proxy client address locally if we know where it is
+				if !ndPkt.IsDAD() && tgt != nil && !tgt.IsLinkLocalUnicast() {
 					if n, ok := h.Cache.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(h.Down) {
 						if na := BuildNA(h.Up, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, false); na != nil {
 							h.Up.Write(na, h.Up.HW, ndPkt.eth.SrcMAC)
@@ -216,6 +280,21 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 							continue
 						}
 					}
+				}
+			}
+
+			// Handle NA from upstream (including DAD responses)
+			// These need to be forwarded to all downstream interfaces so DAD works correctly
+			if ndPkt.Type() == layers.ICMPv6TypeNeighborAdvertisement && !h.Config.NoDAD {
+				// If it's a response to DAD (destination is all-nodes multicast or solicited-node multicast),
+				// forward to all downlinks so any device doing DAD will see the conflict
+				if ndPkt.ipv6.DstIP.IsMulticast() {
+					h.Config.DebugLog("forwarding NA from upstream (possible DAD response for %s)", ndPkt.Target())
+					for _, d := range h.Down {
+						buf := ndPkt.Sanitize(d, !h.Config.NoRewrite)
+						d.Write(buf, d.HW, nil)
+					}
+					continue
 				}
 			}
 

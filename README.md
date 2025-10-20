@@ -52,10 +52,14 @@ responding as needed to maintain connectivity across isolated segments.
 Key Features
 ------------------
 
-- **Transparent ND Bridging** – Bridges multicast ND and RA traffic between interfaces
-  to enable cross-segment SLAAC.
-- **Local NA Synthesis** – Responds locally for router and client addresses, hiding
-  network topology.
+- **ND Proxying** – Relays Neighbor Solicitation and Neighbor Advertisement messages
+  between interfaces for transparent address resolution across segments.
+- **RA Proxying** – Forwards Router Advertisements from upstream to all downstream
+  interfaces, enabling SLAAC autoconfiguration across isolated segments.
+- **DAD Proxying** – Forwards DAD probes between interfaces and responds immediately
+  when address conflicts are detected in cache.
+- **Local NA Synthesis** – Responds locally for router and client addresses, reducing
+  upstream traffic and hiding network topology.
 - **Automatic Route Management** – Installs and updates per-host /128 routes with
   rate limiting.
 - **Dynamic Prefix Learning** – Learns valid prefixes from Router Advertisements and
@@ -84,6 +88,8 @@ Quick Start
 
 Installation
 ------------------
+
+Please note that you must have [`lang/go`](https://github.com/freebsd/freebsd-ports/tree/main/lang/go) installed to build.
 
 From Source:
 
@@ -144,21 +150,26 @@ Examples
 Packet Flow
 ------------------
 
-## Downstream → Upstream (Client to Router)
+## Downstream → Upstream (Client to ISP Router)
 
 1. Client sends RS/NS toward upstream router.
-2. ``ndp-proxy-go`` learns the client’s IPv6 and MAC address.
+2. ``ndp-proxy-go`` learns the client's IPv6 and MAC address.
 3. Installs per-host route for return traffic.
-4. Forwards packet upstream (rewriting SLLA).
-5. Synthesizes NA if NS targets the router’s LLA.
+4. DAD probes: Checked against cache for conflicts with other downstream clients.
+   If conflict found, immediate NA sent on same interface. Otherwise forwarded upstream.
+5. Regular NS: Forwards packet upstream (rewriting SLLA), or synthesizes NA
+   if NS targets the router's LLA.
 
-## Upstream → Downstream (Router to Client)
+## Upstream → Downstream (ISP Router to Client)
 
 1. Router sends RA/NA packets.
 2. ``ndp-proxy-go`` learns router LLA and prefixes from RA.
 3. Forwards multicast RAs to all downstream interfaces.
-4. Synthesizes NA upstream if NS targets a downstream client.
-5. Routes unicast packets to the correct downstream interface.
+4. DAD probes from any upstream device (router or other clients) are checked
+   against cache; if a downstream client owns the address, defends it immediately
+   with NA sent upstream, otherwise forwards the DAD probe to all downstream interfaces.
+5. Regular NS: Synthesizes NA upstream if NS targets a downstream client.
+6. Routes unicast packets to the correct downstream interface.
 
 
 Code Structure

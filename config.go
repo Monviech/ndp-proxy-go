@@ -22,7 +22,7 @@ import (
 type Config struct {
 	NoRA        bool
 	NoRoutes    bool
-	AllowDAD    bool
+	NoDAD       bool
 	NoRewrite   bool
 	Debug       bool
 	CacheTTL    time.Duration
@@ -47,7 +47,7 @@ func ParseFlags() *Config {
 	cfg := &Config{}
 	flag.BoolVar(&cfg.NoRA, "no-ra", false, "disable forwarding of Router Advertisements (ICMPv6 type 134)")
 	flag.BoolVar(&cfg.NoRoutes, "no-routes", false, "disable per-host route installation and cleanup")
-	flag.BoolVar(&cfg.AllowDAD, "no-dad-drop", false, "allow Duplicate Address Detection (DAD) NS upstream")
+	flag.BoolVar(&cfg.NoDAD, "no-dad", false, "disable DAD proxying (RFC 4389 non-compliant, may cause conflicts)")
 	flag.BoolVar(&cfg.NoRewrite, "no-rewrite-lla", false, "do not rewrite SLLA/TLLA options (unsafe in L2-isolated setups)")
 	flag.BoolVar(&cfg.Debug, "debug", false, "enable verbose debug logging")
 	flag.DurationVar(&cfg.CacheTTL, "cache-ttl", 10*time.Minute, "neighbor cache TTL")
