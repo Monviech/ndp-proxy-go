@@ -134,17 +134,17 @@ Examples
 ------------------
 
 
-    # Basic usage
-    sudo ndp-proxy-go igc1 igc0
+    # Basic usage (eth0 = WAN, eth1 = LAN)
+    sudo ndp-proxy-go eth0 eth1
 
     # With debug logging
-    sudo ndp-proxy-go --debug igc1 igc0
+    sudo ndp-proxy-go --debug eth0 eth1
 
     # Multiple downstream interfaces
-    sudo ndp-proxy-go igc1 igc0 igc2 igc3
+    sudo ndp-proxy-go eth0 eth1 eth2 eth3
 
     # Custom cache settings
-    sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 igc1 igc0
+    sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 eth0 eth1
 
 
 Packet Flow
