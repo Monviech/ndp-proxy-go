@@ -114,7 +114,7 @@ Flags
 | `--no-rewrite-lla` | Do not rewrite SLLA/TLLA options | disabled |
 | `--no-ra` | Disable Router Advertisement forwarding | disabled |
 | `--no-routes` | Disable automatic per-host route installation | disabled |
-| `--no-dad-drop` | Allow Duplicate Address Detection probes upstream | disabled |
+| `--no-dad` | Disable DAD proxying (RFC 4389 non-compliant, may cause conflicts) | disabled |
 | `--cache-ttl <dur>` | Neighbor cache lifetime | 10m |
 | `--cache-max <n>` | Maximum learned neighbors | 4096 |
 | `--route-qps <n>` | Max route operations per second | 50 |
