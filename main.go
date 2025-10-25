@@ -27,8 +27,8 @@ import (
 var Version = "dev"
 
 func main() {
-	// Set consistent prefix and remove timestamp (syslog adds its own)
-	log.SetPrefix("ndp-proxy-go: ")
+	// No prefix and timestamp (when run with daemon(8) syslog adds its own)
+	log.SetPrefix("")
 	log.SetFlags(0)
 
 	config := ParseFlags()
@@ -86,14 +86,16 @@ func main() {
 		}
 	}()
 
-	log.Printf("up=%s down=%s (no-ra=%v no-routes=%v rewrite-lla=%v pcap-timeout=%v debug=%v)",
-		up.Name, strings.Join(args[1:], ","), config.NoRA, config.NoRoutes, !config.NoRewrite, config.PcapTimeout, config.Debug)
+	log.Printf("upstream=%s downstream=%s no-ra=%t no-routes=%t no-dad=%t no-rewrite-lla=%t cache-ttl=%s cache-max=%d route-qps=%d route-burst=%d pcap-timeout=%s",
+		up.Name, strings.Join(args[1:], ","),
+		config.NoRA, config.NoRoutes, config.NoDAD, config.NoRewrite,
+		config.CacheTTL, config.CacheMax, config.RouteQPS, config.RouteBurst, config.PcapTimeout)
 
 	hub.Start(ctx)
 
 	// Trigger initial Router Solicitation to learn prefixes immediately
 	if up.LLA != nil {
-		log.Printf("sending Router Solicitation on %s to bootstrap prefix learning", up.Name)
+		config.DebugLog("sending Router Solicitation on %s to bootstrap prefix learning", up.Name)
 		if err := SendRouterSolicitation(up); err != nil {
 			log.Printf("warning - failed to send initial RS: %v", err)
 		}

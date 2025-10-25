@@ -10,13 +10,13 @@ all:
 
 install: all
 	install -m 755 $(PROG) $(BINDIR)/
-	install -m 555 files/ndp_proxy_go.in $(RCDIR)/ndp_proxy_go
+	install -m 555 files/ndp-proxy-go.in $(RCDIR)/ndp-proxy-go
 
 clean:
 	rm -f $(PROG)
 
 uninstall:
 	rm -f $(BINDIR)/$(PROG)
-	rm -f $(RCDIR)/ndp_proxy_go
+	rm -f $(RCDIR)/ndp-proxy-go
 
 .PHONY: all install clean uninstall

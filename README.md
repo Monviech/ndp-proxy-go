@@ -211,7 +211,7 @@ sudo ndp-proxy-go --no-ra eth0 eth1 eth2
 
 Service script:
 ```
-# /etc/rc.conf.d/ndp_proxy_go 
+# /etc/rc.conf.d/ndp-proxy-go
 
 ndp_proxy_go_enable="YES"
 ndp_proxy_go_upstream="eth0"
