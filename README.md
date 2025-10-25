@@ -60,14 +60,13 @@ Key Features
   when address conflicts are detected in cache.
 - **Local NA Synthesis** – Responds locally for router and client addresses, reducing
   upstream traffic and hiding network topology.
-- **Automatic Route Management** – Installs and updates per-host /128 routes with
-  rate limiting.
+- **Automatic Route Management** – Installs and updates per-host /128 routes.
 - **Dynamic Prefix Learning** – Learns valid prefixes from Router Advertisements and
   expires them automatically.
 - **Privacy Extension Support** – Handles temporary RFC 4941 addresses without loss
   of connectivity.
 - **Multi-Segment Support** – Supports one upstream and multiple downstream
-  interfaces, each with separate firewall rules.
+  interfaces.
 - **RFC 4861 Compliance** – Validates HopLimit 255, checksums, and packet structure.
 - **Safety Boundaries** – Never forwards link-local unicast traffic.
 
@@ -211,7 +210,7 @@ sudo ndp-proxy-go --no-ra eth0 eth1 eth2
 
 Service script:
 ```
-# /etc/rc.conf.d/ndp-proxy-go
+# /etc/rc.conf.d/ndp_proxy_go
 
 ndp_proxy_go_enable="YES"
 ndp_proxy_go_upstream="eth0"
