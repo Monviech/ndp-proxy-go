@@ -1,9 +1,9 @@
 ndp-proxy-go
 ==================
 
-**Experimental** — IPv6 Neighbor Discovery (ND) Proxy daemon for FreeBSD
+IPv6 Neighbor Discovery (ND) Proxy daemon for FreeBSD
 
-**Note:** This is a personal project and has not been peer-reviewed.
+Status: Testers welcome, should work as intended in scenario outlined below.
 
 ---
 
