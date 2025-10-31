@@ -165,7 +165,7 @@ func (p *NDPacket) ParseRAPrefixes() []RAPrefix {
 	return result
 }
 
-// Sanitize normalizes the packet: HLIM=255, optionally rewrite LLA options.
+// Sanitize normalizes the packet: HLIM=255, optionally rewrite LLA options and RA source.
 func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 	if !rewriteOpts {
 		// No rewriting needed, just return a copy
@@ -179,6 +179,12 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 		ComputeChecksums: true,
 	}
 
+	// Determine source IP: for RAs, use proxy's link-local to present as explicit router
+	srcIP := p.ipv6.SrcIP
+	if p.Type() == layers.ICMPv6TypeRouterAdvertisement && egress.LLA != nil {
+		srcIP = egress.LLA
+	}
+
 	// Rebuild IPv6 layer with correct hop limit
 	ip6 := &layers.IPv6{
 		Version:      6,
@@ -187,7 +193,7 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 		Length:       p.ipv6.Length,
 		NextHeader:   layers.IPProtocolICMPv6,
 		HopLimit:     NdHopLimit,
-		SrcIP:        p.ipv6.SrcIP,
+		SrcIP:        srcIP,
 		DstIP:        p.ipv6.DstIP,
 	}
 
