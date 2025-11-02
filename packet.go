@@ -69,7 +69,8 @@ func ParseNDPacket(pkt gopacket.Packet) *NDPacket {
 	if ip6.DstIP.IsLinkLocalUnicast() &&
 		!isMulticastEther(eth) &&
 		!ip6.DstIP.IsMulticast() &&
-		icmpType != layers.ICMPv6TypeRouterAdvertisement {
+		icmpType != layers.ICMPv6TypeRouterAdvertisement &&
+		icmpType != layers.ICMPv6TypeNeighborAdvertisement {
 		return nil
 	}
 

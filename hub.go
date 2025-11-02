@@ -197,10 +197,22 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 			}
 
 			// Handle Neighbor Advertisement from downstream
-			// Forward NA upstream (including DAD responses) so upstream devices can see downstream addresses
-			if ndPkt.Type() == layers.ICMPv6TypeNeighborAdvertisement && !h.Config.NoDAD {
-				h.Config.DebugLog("forwarding NA from %s (target %s) to upstream", src.Name, ndPkt.Target())
-				// Fall through to forward upstream
+			// Learn the target address (global address) in addition to source (link-local)
+			if ndPkt.Type() == layers.ICMPv6TypeNeighborAdvertisement {
+				tgt := ndPkt.Target()
+				// Learn the target address if it's a global address
+				if tgt != nil && !tgt.IsLinkLocalUnicast() && !tgt.IsUnspecified() {
+					h.Cache.Learn(tgt, ndPkt.eth.SrcMAC, idx, src.Name)
+					h.Config.DebugLog("learned global address %s from NA on %s (port %d)", tgt, src.Name, idx)
+				}
+
+				// Forward NA upstream (including DAD responses) so upstream devices can see downstream addresses
+				if !h.Config.NoDAD {
+					h.Config.DebugLog("forwarding NA from %s (target %s) to upstream", src.Name, tgt)
+					// Fall through to forward upstream
+				} else {
+					continue
+				}
 			}
 
 			// Forward to upstream
