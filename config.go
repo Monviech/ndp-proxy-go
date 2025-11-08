@@ -58,7 +58,7 @@ func ParseFlags() *Config {
 	flag.Parse()
 
 	if *version {
-		fmt.Printf("ndp-proxy-go version %s\n", Version)
+		fmt.Printf("ndp-proxy-go %s\n", Version)
 		os.Exit(0)
 	}
 
