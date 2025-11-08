@@ -1,41 +1,38 @@
 ndp-proxy-go
 ==================
 
-IPv6 Neighbor Discovery (ND) Proxy daemon for FreeBSD
+**IPv6 Neighbor Discovery Protocol Proxy**
 
-Status: Testers welcome, should work as intended in scenario outlined below.
+A [plugin](https://github.com/opnsense/plugins/tree/master/net/ndp-proxy-go) and 
+[port](https://github.com/opnsense/ports/tree/master/opnsense/ndp-proxy-go) 
+are available for OPNsense.
 
----
-
-The Problem
+The Issue
 ------------------
 
 Modern IPv6 networks face challenges when using a FreeBSD host as a router between
 an ISP gateway and internal clients.
 
-**Layer 2 Bridging Falls Short:**
-Bridging interfaces creates a flat network where all devices share the same subnet.
-This removes segmentation, prevents per-interface firewalling, and exposes clients
-directly to the ISP network.
-
-**Layer 3 Routing Needs Prefix Delegation:**
-Most ISPs and cloud providers do **not** offer IPv6 prefix delegation (DHCPv6-PD).
+Some ISPs and cloud providers do not offer IPv6 prefix delegation (DHCPv6-PD).
 Without delegated prefixes, you cannot assign unique subnets to downstream
 interfaces, making traditional routing impossible.
 
-**Typical ISP Scenario:**
-Your ISP provides only a single /64 prefix via Router Advertisements. All devices—
-including your FreeBSD router and clients are expected to autoconfigure addresses
-within that prefix using SLAAC. You, however, want proper Layer 3 isolation and
-routing without relying on the ISP’s cooperation.
+Only a single /64 prefix is provided via Router Advertisements in that case.
+All devices are expected to autoconfigure addresses within that prefix using SLAAC.
+
+One possible solution is bridging interfaces, which would create a flat network
+where all devices share the same subnet.
+This removes segmentation, prevents per-interface firewalling, and exposes clients
+directly to the ISP network.
+
+However, proper Layer 3 isolation and routing are not possible without a proxy.
 
 ---
 
 The Solution
 ------------------
 
-``ndp-proxy-go`` enables **transparent Layer 3 routing that appears as Layer 2 bridging**
-to the upstream gateway. It makes downstream clients seem to reside on the same
+``ndp-proxy-go`` makes downstream clients seem to reside on the same
 Ethernet segment as the ISP router while maintaining routing and firewall separation
 on the FreeBSD host.
 
@@ -68,7 +65,6 @@ Key Features
 - **Multi-Segment Support** – Supports one upstream and multiple downstream
   interfaces.
 - **RFC 4861 Compliance** – Validates HopLimit 255, checksums, and packet structure.
-- **Safety Boundaries** – Never forwards link-local unicast traffic.
 
 ---
 
