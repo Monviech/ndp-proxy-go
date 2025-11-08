@@ -18,6 +18,9 @@ import (
 	"time"
 )
 
+// version is set via ldflags at build time
+var version = "dev"
+
 // Config holds runtime configuration parsed from command-line flags.
 type Config struct {
 	NoRA        bool
@@ -42,7 +45,7 @@ func (c *Config) ShouldForwardType(icmpType uint8) bool {
 
 // ParseFlags parses command-line flags and returns a Config.
 func ParseFlags() *Config {
-	version := flag.Bool("version", false, "show version and exit")
+	showVersion := flag.Bool("version", false, "show version and exit")
 
 	cfg := &Config{}
 	flag.BoolVar(&cfg.NoRA, "no-ra", false, "disable forwarding of Router Advertisements (ICMPv6 type 134)")
@@ -57,8 +60,8 @@ func ParseFlags() *Config {
 	flag.DurationVar(&cfg.PcapTimeout, "pcap-timeout", 50*time.Millisecond, "packet capture timeout (lower = less latency, higher = less CPU)")
 	flag.Parse()
 
-	if *version {
-		fmt.Printf("ndp-proxy-go %s\n", Version)
+	if *showVersion {
+		fmt.Printf("ndp-proxy-go %s\n", version)
 		os.Exit(0)
 	}
 

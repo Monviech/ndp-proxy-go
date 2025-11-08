@@ -23,9 +23,6 @@ import (
 	"time"
 )
 
-// Version is set via ldflags at build time
-var Version = "dev"
-
 func main() {
 	// No prefix and timestamp (when run with daemon(8) syslog adds its own)
 	log.SetPrefix("")

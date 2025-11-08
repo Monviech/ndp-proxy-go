@@ -3,7 +3,7 @@ VERSION=	v0.1.5
 PROG=		ndp-proxy-go
 BINDIR=		/usr/local/sbin
 RCDIR=		/usr/local/etc/rc.d
-LDFLAGS=	-s -w -X main.Version=$(VERSION)
+LDFLAGS=	-s -w -X main.version=$(VERSION)
 
 all:
 	go build -ldflags="$(LDFLAGS)" -o $(PROG)
