@@ -174,7 +174,7 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 							// Address conflict! Send NA to all-nodes multicast
 							allNodes := net.ParseIP("ff02::1")
 							allNodesMAC := net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0x01}
-							if na := BuildNA(src, allNodes, allNodesMAC, tgt, false); na != nil {
+							if na := BuildNA(src, src.LLA, allNodes, allNodesMAC, tgt, false); na != nil {
 								src.Write(na, src.HW, allNodesMAC)
 								h.Config.DebugLog("DAD conflict: %s exists on %s (port %d), sent NA to all-nodes", tgt, n.If, n.Port)
 								continue
@@ -188,7 +188,7 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 
 				// Regular NS: proxy router LLA locally
 				if !ndPkt.IsDAD() && tgt != nil && h.isRouterLLA(tgt) {
-					if na := BuildNA(src, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, true); na != nil {
+					if na := BuildNA(src, tgt, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, true); na != nil {
 						src.Write(na, src.HW, ndPkt.eth.SrcMAC)
 						h.Config.DebugLog("proxied NA (router LLA %s) -> %s on %s", tgt, ndPkt.ipv6.SrcIP, src.Name)
 						continue
@@ -272,7 +272,7 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 							// Respond immediately to protect downstream client
 							allNodes := net.ParseIP("ff02::1")
 							allNodesMAC := net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0x01}
-							if na := BuildNA(h.Up, allNodes, allNodesMAC, tgt, false); na != nil {
+							if na := BuildNA(h.Up, h.Up.LLA, allNodes, allNodesMAC, tgt, false); na != nil {
 								h.Up.Write(na, h.Up.HW, allNodesMAC)
 								h.Config.DebugLog("DAD conflict: upstream wants %s but exists on %s (port %d)", tgt, n.If, n.Port)
 								continue
@@ -286,7 +286,7 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 				// Regular NS: proxy client address locally if we know where it is
 				if !ndPkt.IsDAD() && tgt != nil && !tgt.IsLinkLocalUnicast() {
 					if n, ok := h.Cache.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(h.Down) {
-						if na := BuildNA(h.Up, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, false); na != nil {
+						if na := BuildNA(h.Up, tgt, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, false); na != nil {
 							h.Up.Write(na, h.Up.HW, ndPkt.eth.SrcMAC)
 							h.Config.DebugLog("proxied NA (client %s) -> %s on %s", tgt, ndPkt.ipv6.SrcIP, h.Up.Name)
 							continue
