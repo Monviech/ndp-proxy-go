@@ -65,6 +65,9 @@ Key Features
 - **Multi-Segment Support** – Supports one upstream and multiple downstream
   interfaces.
 - **RFC 4861 Compliance** – Validates HopLimit 255, checksums, and packet structure.
+- **Multi hop** - The proxy can be chained in series to span the single prefix across
+  multiple routers. Tested with 2 routers running the proxy (ISP -> Router1 -> Router2 -> Client).
+  Please note the ``pcap-timeout`` for tuning latency.
 
 ---
 
