@@ -359,8 +359,16 @@ func BuildNA(egress *Port, srcIP net.IP, dstIP net.IP, dstMAC net.HardwareAddr, 
 
 // SendRouterSolicitation sends a Router Solicitation to trigger an immediate RA.
 func SendRouterSolicitation(port *Port) error {
-	if port == nil || port.HW == nil || port.LLA == nil {
-		return fmt.Errorf("invalid port for RS")
+	if port == nil || port.LLA == nil {
+		return fmt.Errorf("invalid port for RS: missing LLA")
+	}
+
+	if port.IsP2P {
+		return sendRSPointToPoint(port)
+	}
+
+	if port.HW == nil {
+		return fmt.Errorf("invalid port for RS: missing MAC")
 	}
 
 	allRouters := net.ParseIP("ff02::2")
@@ -412,6 +420,54 @@ func SendRouterSolicitation(port *Port) error {
 	}
 
 	port.Write(buf.Bytes(), port.HW, allRoutersMAC)
+	return nil
+}
+
+// sendRSPointToPoint sends RS on P2P interface using Loopback framing
+func sendRSPointToPoint(port *Port) error {
+	allRouters := net.ParseIP("ff02::2")
+
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
+
+	ip6 := &layers.IPv6{
+		Version:    6,
+		HopLimit:   NdHopLimit,
+		NextHeader: layers.IPProtocolICMPv6,
+		SrcIP:      port.LLA,
+		DstIP:      allRouters,
+	}
+
+	icmp6 := &layers.ICMPv6{
+		TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeRouterSolicitation, 0),
+	}
+	if err := icmp6.SetNetworkLayerForChecksum(ip6); err != nil {
+		return err
+	}
+
+	// RS without SLLA option (no MAC on P2P)
+	rs := &layers.ICMPv6RouterSolicitation{
+		Options: layers.ICMPv6Options{},
+	}
+
+	// Loopback framing for DLT_NULL
+	err := gopacket.SerializeLayers(buf, opts,
+		&layers.Loopback{Family: layers.ProtocolFamilyIPv6FreeBSD},
+		ip6,
+		icmp6,
+		rs,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Write directly - bypass normal Write() which expects Ethernet
+	port.wmu.Lock()
+	_ = port.H.WritePacketData(buf.Bytes())
+	port.wmu.Unlock()
 	return nil
 }
 
