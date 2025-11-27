@@ -34,22 +34,34 @@ const (
 // NDPacket wraps a parsed ND/RA packet with helper methods.
 type NDPacket struct {
 	raw    []byte
-	eth    *layers.Ethernet
+	eth    *layers.Ethernet // nil for P2P links
 	ipv6   *layers.IPv6
 	icmpv6 *layers.ICMPv6
+	isP2P  bool
 }
 
 // ParseNDPacket validates and parses an ND packet from gopacket.
 func ParseNDPacket(pkt gopacket.Packet) *NDPacket {
-	ethL := pkt.Layer(layers.LayerTypeEthernet)
-	ip6L := pkt.Layer(layers.LayerTypeIPv6)
-	icmpL := pkt.Layer(layers.LayerTypeICMPv6)
+	var eth *layers.Ethernet
+	var isP2P bool
 
-	if ethL == nil || ip6L == nil || icmpL == nil {
+	// Try Ethernet first (most common case)
+	if ethL := pkt.Layer(layers.LayerTypeEthernet); ethL != nil {
+		eth = ethL.(*layers.Ethernet)
+	} else if pkt.Layer(layers.LayerTypeLoopback) != nil {
+		// P2P link (PPPoE, tunnels) - no Ethernet header
+		isP2P = true
+	} else {
 		return nil
 	}
 
-	eth := ethL.(*layers.Ethernet)
+	ip6L := pkt.Layer(layers.LayerTypeIPv6)
+	icmpL := pkt.Layer(layers.LayerTypeICMPv6)
+
+	if ip6L == nil || icmpL == nil {
+		return nil
+	}
+
 	ip6 := ip6L.(*layers.IPv6)
 	icmp := icmpL.(*layers.ICMPv6)
 
@@ -63,15 +75,18 @@ func ParseNDPacket(pkt gopacket.Packet) *NDPacket {
 		return nil
 	}
 
-	// Never leak unicast link-local across links, except allow Router
-	// Advertisements (can be unicast when solicited via RS)
-	icmpType := uint8(icmp.TypeCode.Type())
-	if ip6.DstIP.IsLinkLocalUnicast() &&
-		!isMulticastEther(eth) &&
-		!ip6.DstIP.IsMulticast() &&
-		icmpType != layers.ICMPv6TypeRouterAdvertisement &&
-		icmpType != layers.ICMPv6TypeNeighborAdvertisement {
-		return nil
+	// For Ethernet-framed packets: apply L2 checks
+	if eth != nil {
+		// Never leak unicast link-local across links, except allow Router
+		// Advertisements (can be unicast when solicited via RS)
+		icmpType := uint8(icmp.TypeCode.Type())
+		if ip6.DstIP.IsLinkLocalUnicast() &&
+			!isMulticastEther(eth) &&
+			!ip6.DstIP.IsMulticast() &&
+			icmpType != layers.ICMPv6TypeRouterAdvertisement &&
+			icmpType != layers.ICMPv6TypeNeighborAdvertisement {
+			return nil
+		}
 	}
 
 	return &NDPacket{
@@ -79,6 +94,7 @@ func ParseNDPacket(pkt gopacket.Packet) *NDPacket {
 		eth:    eth,
 		ipv6:   ip6,
 		icmpv6: icmp,
+		isP2P:  isP2P,
 	}
 }
 
@@ -103,7 +119,13 @@ func (p *NDPacket) Target() net.IP {
 
 // getLayer is a helper to extract a specific layer from the raw packet data
 func (p *NDPacket) getLayer(layerType gopacket.LayerType) gopacket.Layer {
-	packet := gopacket.NewPacket(p.raw, layers.LayerTypeEthernet, gopacket.NoCopy)
+	var firstLayer gopacket.Decoder
+	if p.isP2P {
+		firstLayer = layers.LayerTypeLoopback
+	} else {
+		firstLayer = layers.LayerTypeEthernet
+	}
+	packet := gopacket.NewPacket(p.raw, firstLayer, gopacket.NoCopy)
 	return packet.Layer(layerType)
 }
 
@@ -395,5 +417,5 @@ func SendRouterSolicitation(port *Port) error {
 
 // isMulticastEther returns true if the Ethernet destination is multicast.
 func isMulticastEther(e *layers.Ethernet) bool {
-	return len(e.DstMAC) > 0 && (e.DstMAC[0]&1) == 1
+	return e != nil && len(e.DstMAC) > 0 && (e.DstMAC[0]&1) == 1
 }

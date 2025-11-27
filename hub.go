@@ -153,7 +153,7 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 			}
 
 			// Learn source (skip DAD probes - they have :: source)
-			if !ndPkt.IsDAD() {
+			if !ndPkt.IsDAD() && ndPkt.eth != nil {
 				h.Cache.Learn(ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, idx, src.Name)
 			}
 
@@ -200,7 +200,7 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 			// Learn the target address in addition to source (link-local)
 			if ndPkt.Type() == layers.ICMPv6TypeNeighborAdvertisement {
 				tgt := ndPkt.Target()
-				if tgt != nil && !tgt.IsLinkLocalUnicast() && !tgt.IsUnspecified() {
+				if tgt != nil && !tgt.IsLinkLocalUnicast() && !tgt.IsUnspecified() && ndPkt.eth != nil {
 					h.Cache.Learn(tgt, ndPkt.eth.SrcMAC, idx, src.Name)
 					h.Config.DebugLog("learned address %s from NA on %s (port %d)", tgt, src.Name, idx)
 				}
@@ -214,7 +214,11 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 				}
 			}
 
-			// Forward to upstream
+			// Forward to upstream (skip if upstream is P2P)
+			if h.Up.IsP2P {
+				h.Config.DebugLog("skipping upstream forward on P2P interface %s", h.Up.Name)
+				continue
+			}
 			buf := ndPkt.Sanitize(h.Up, !h.Config.NoRewrite)
 			h.Up.Write(buf, h.Up.HW, nil)
 		}

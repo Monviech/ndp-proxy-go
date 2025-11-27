@@ -19,16 +19,19 @@ import (
 	"net"
 	"sync"
 
+	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 )
 
 // Port represents a network interface with its PCAP handle and addressing info.
 type Port struct {
-	Name string
-	HW   net.HardwareAddr
-	LLA  net.IP // Link-local address (fe80::) for this interface
-	H    *pcap.Handle
-	wmu  sync.Mutex // Serialize PCAP writes
+	Name     string
+	HW       net.HardwareAddr
+	LLA      net.IP
+	H        *pcap.Handle
+	wmu      sync.Mutex
+	IsP2P    bool            // Point-to-point link (PPPoE, tunnels)
+	LinkType layers.LinkType // DLT type for packet decoding
 }
 
 // OpenPort opens a network interface for packet capture with strict ND filtering.
@@ -60,6 +63,13 @@ func OpenPort(name string, config *Config) *Port {
 	}
 	_ = h.SetDirection(pcap.DirectionIn)
 
+	// Detect link type
+	linkType := h.LinkType()
+	isP2P := (linkType == layers.LinkTypeNull || linkType == layers.LinkTypeLoop || linkType == layers.LinkTypeRaw)
+	if isP2P {
+		config.DebugLog("detected point-to-point link on %s (DLT=%d)", name, linkType)
+	}
+
 	// Strict BPF: ICMPv6, HLIM==255, only ND/RA types (133..136).
 	filter := "icmp6 and ip6[7]=255 and (ip6[40]=133 or ip6[40]=134 or ip6[40]=135 or ip6[40]=136)"
 	if err := h.SetBPFFilter(filter); err != nil {
@@ -68,10 +78,12 @@ func OpenPort(name string, config *Config) *Port {
 
 	ifi, _ := net.InterfaceByName(name)
 	return &Port{
-		Name: name,
-		HW:   ifi.HardwareAddr,
-		LLA:  FindLinkLocal(name),
-		H:    h,
+		Name:     name,
+		HW:       ifi.HardwareAddr,
+		LLA:      FindLinkLocal(name),
+		H:        h,
+		IsP2P:    isP2P,
+		LinkType: linkType,
 	}
 }
 

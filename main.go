@@ -90,8 +90,10 @@ func main() {
 
 	hub.Start(ctx)
 
-	// Trigger initial Router Solicitation to learn prefixes immediately
-	if up.LLA != nil {
+	// Trigger initial Router Solicitation (skip for P2P - RAs come periodically and its simpler for now)
+	if up.IsP2P {
+		log.Printf("P2P upstream %s - waiting for periodic RA (no RS sent)", up.Name)
+	} else if up.LLA != nil {
 		config.DebugLog("sending Router Solicitation on %s to bootstrap prefix learning", up.Name)
 		if err := SendRouterSolicitation(up); err != nil {
 			log.Printf("warning - failed to send initial RS: %v", err)
