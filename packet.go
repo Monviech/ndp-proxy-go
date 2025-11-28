@@ -260,17 +260,44 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 		return append([]byte(nil), p.raw...)
 	}
 
+	// Build Ethernet header for egress
+	var ethHeader *layers.Ethernet
+	if p.eth != nil {
+		// Use original Ethernet header as base
+		ethHeader = &layers.Ethernet{
+			SrcMAC:       egress.HW,
+			DstMAC:       p.eth.DstMAC,
+			EthernetType: layers.EthernetTypeIPv6,
+		}
+	} else {
+		// P2P source: construct Ethernet header from scratch
+		var dstMAC net.HardwareAddr
+		if ip6.DstIP.IsMulticast() {
+			// Derive multicast MAC: 33:33:xx:xx:xx:xx
+			dstMAC = make(net.HardwareAddr, 6)
+			dstMAC[0] = 0x33
+			dstMAC[1] = 0x33
+			copy(dstMAC[2:6], ip6.DstIP[12:16])
+		} else {
+			// Broadcast fallback (shouldn't happen often)
+			dstMAC = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+		}
+		ethHeader = &layers.Ethernet{
+			SrcMAC:       egress.HW,
+			DstMAC:       dstMAC,
+			EthernetType: layers.EthernetTypeIPv6,
+		}
+	}
+
 	// Serialize all layers
 	if err := gopacket.SerializeLayers(buf, opts,
-		p.eth,
+		ethHeader,
 		ip6,
 		icmp,
 		ndLayer,
 	); err != nil {
 		return append([]byte(nil), p.raw...)
 	}
-
-	return buf.Bytes()
 }
 
 // rewriteOptions replaces link-layer addresses in ND options

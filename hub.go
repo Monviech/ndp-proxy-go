@@ -187,7 +187,7 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 				}
 
 				// Regular NS: proxy router LLA locally
-				if !ndPkt.IsDAD() && tgt != nil && h.isRouterLLA(tgt) {
+				if !ndPkt.IsDAD() && tgt != nil && h.isRouterLLA(tgt) && ndPkt.eth != nil {
 					if na := BuildNA(src, tgt, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, true); na != nil {
 						src.Write(na, src.HW, ndPkt.eth.SrcMAC)
 						h.Config.DebugLog("proxied NA (router LLA %s) -> %s on %s", tgt, ndPkt.ipv6.SrcIP, src.Name)
@@ -287,7 +287,7 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 				}
 
 				// Regular NS: proxy client address locally if we know where it is
-				if !ndPkt.IsDAD() && tgt != nil && !tgt.IsLinkLocalUnicast() {
+				if !ndPkt.IsDAD() && tgt != nil && !tgt.IsLinkLocalUnicast() && ndPkt.eth != nil {
 					if n, ok := h.Cache.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(h.Down) {
 						if na := BuildNA(h.Up, tgt, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, false); na != nil {
 							h.Up.Write(na, h.Up.HW, ndPkt.eth.SrcMAC)
