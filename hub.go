@@ -214,10 +214,14 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 				}
 			}
 
-			// Forward to upstream (skip if upstream is P2P)
+			// Forward to upstream
+			// For P2P uplinks: only forward RS (to trigger RA from router)
 			if h.Up.IsP2P {
-				h.Config.DebugLog("skipping upstream forward on P2P interface %s", h.Up.Name)
-				continue
+				if ndPkt.Type() != layers.ICMPv6TypeRouterSolicitation {
+					h.Config.DebugLog("skipping upstream forward on P2P interface %s (type %d)", h.Up.Name, ndPkt.Type())
+					continue
+				}
+				h.Config.DebugLog("forwarding RS on P2P interface %s to trigger RA", h.Up.Name)
 			}
 			buf := ndPkt.Sanitize(h.Up, !h.Config.NoRewrite)
 			h.Up.Write(buf, h.Up.HW, nil)

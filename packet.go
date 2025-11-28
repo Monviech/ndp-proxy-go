@@ -298,6 +298,8 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 	); err != nil {
 		return append([]byte(nil), p.raw...)
 	}
+
+	return buf.Bytes()
 }
 
 // rewriteOptions replaces link-layer addresses in ND options
