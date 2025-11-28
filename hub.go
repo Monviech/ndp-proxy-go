@@ -25,6 +25,19 @@
 // the router (no RAs) and the router can't discover clients (NS fails across
 // segment boundaries).
 //
+// Link framing differs between interface types:
+//
+//   Ethernet (most interfaces): [DstMAC|SrcMAC|0x86DD|IPv6|ICMPv6|ND]
+//   - 14-byte header, uses MAC for L2 addressing
+//   - ND options include Source/Target Link-Layer Address (SLLA/TLLA)
+//   - Packets rewritten with egress MAC before forwarding
+//
+//   P2P (PPPoE, tunnels): [LoopbackHdr|IPv6|ICMPv6|ND]
+//   - 4-byte header (DLT_NULL), no MAC addresses
+//   - No SLLA/TLLA options (no L2 addressing on P2P)
+//   - Only RS forwarded upstream (triggers RA); NS/NA skipped (no L2 resolution)
+//   - RAs received from P2P get Ethernet headers added for downstream delivery
+//
 
 package main
 
@@ -222,6 +235,11 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 					continue
 				}
 				h.Config.DebugLog("forwarding RS on P2P interface %s to trigger RA", h.Up.Name)
+				// Use P2P-aware RS sender (Loopback framing, no SLLA option)
+				if err := SendRouterSolicitation(h.Up); err != nil {
+					h.Config.DebugLog("P2P RS forward failed: %v", err)
+				}
+				continue
 			}
 			buf := ndPkt.Sanitize(h.Up, !h.Config.NoRewrite)
 			h.Up.Write(buf, h.Up.HW, nil)
