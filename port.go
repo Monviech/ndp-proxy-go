@@ -67,7 +67,9 @@ func OpenPort(name string, config *Config) *Port {
 	linkType := h.LinkType()
 	isP2P := (linkType == layers.LinkTypeNull || linkType == layers.LinkTypeLoop || linkType == layers.LinkTypeRaw)
 	if isP2P {
-		config.DebugLog("detected point-to-point link on %s (DLT=%d)", name, linkType)
+		config.DebugLog("detected point-to-point on %s (DLT=%d)", name, linkType)
+	} else {
+		config.DebugLog("detected ethernet on %s (DLT=%d)", name, linkType)
 	}
 
 	// Strict BPF: ICMPv6, HLIM==255, only ND/RA types (133..136).

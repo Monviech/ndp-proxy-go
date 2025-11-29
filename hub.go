@@ -231,13 +231,13 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 			// For P2P uplinks: only forward RS (to trigger RA from router)
 			if h.Up.IsP2P {
 				if ndPkt.Type() != layers.ICMPv6TypeRouterSolicitation {
-					h.Config.DebugLog("skipping upstream forward on P2P interface %s (type %d)", h.Up.Name, ndPkt.Type())
+					h.Config.DebugLog("skipping NA/NS upstream forward on point-to-point interface %s (type %d)", h.Up.Name, ndPkt.Type())
 					continue
 				}
-				h.Config.DebugLog("forwarding RS on P2P interface %s to trigger RA", h.Up.Name)
+				h.Config.DebugLog("forwarding RS on point-to-point interface %s to trigger RA", h.Up.Name)
 				// Use P2P-aware RS sender (Loopback framing, no SLLA option)
 				if err := SendRouterSolicitation(h.Up); err != nil {
-					h.Config.DebugLog("P2P RS forward failed: %v", err)
+					h.Config.DebugLog("RS forward failed on point-to-point interface: %v", err)
 				}
 				continue
 			}
