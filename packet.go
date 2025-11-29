@@ -236,6 +236,8 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 		if raLayer := p.getLayer(layers.LayerTypeICMPv6RouterAdvertisement); raLayer != nil {
 			ra := raLayer.(*layers.ICMPv6RouterAdvertisement)
 			// Rewrite source link-layer address option
+			// TODO: P2P RAs lack SLLA - add option if missing for efficiency (saves NS/NA round trip)
+			//       Though will still work without this option, so low priority.
 			ra.Options = rewriteOptions(ra.Options, egress.HW, layers.ICMPv6OptSourceAddress)
 			ndLayer = ra
 		}
