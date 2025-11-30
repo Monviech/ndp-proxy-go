@@ -92,9 +92,13 @@ func main() {
 
 	// Trigger initial Router Solicitation to learn prefixes immediately
 	if up.LLA != nil {
-		config.DebugLog("sending Router Solicitation on %s to bootstrap prefix learning", up.Name)
+		config.DebugLog("sending Router Solicitation on %s", up.Name)
 		if err := SendRouterSolicitation(up); err != nil {
-			log.Printf("warning - failed to send initial RS: %v", err)
+			if up.IsP2P {
+				log.Printf("P2P RS on %s failed: %v - waiting for periodic RA", up.Name, err)
+			} else {
+				log.Printf("warning - failed to send initial RS: %v", err)
+			}
 		}
 	}
 
@@ -108,9 +112,12 @@ func main() {
 	hub.Wait()
 	houseWG.Wait()
 
-	if !config.NoRoutes {
-		cache.CleanupAll()
-	}
+	// Routes intentionally not cleaned up on shutdown since we need some kind of persistent state here.
+	// Some clients do not send their GUAs in NDP packets for some time, so they would stop receiving return traffic.
+	// When traffic resumes, kernel does NDP and proxy learns from NA responses.
+	// if !config.NoRoutes {
+	//    cache.CleanupAll()
+	// }
 
 	log.Printf("exit clean")
 }
