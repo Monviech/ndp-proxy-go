@@ -67,9 +67,12 @@ func OpenPort(name string, config *Config) *Port {
 	linkType := h.LinkType()
 	isP2P := (linkType == layers.LinkTypeNull || linkType == layers.LinkTypeLoop || linkType == layers.LinkTypeRaw)
 	if isP2P {
-		config.DebugLog("detected point-to-point on %s (DLT=%d)", name, linkType)
+		log.Printf("(experimental) detected point-to-point interface on %s (DLT=%d); "+
+			"upstream ND is not available on this link type; only RS will be forwarded. "+
+			"Restarting the host may temporarily break IPv6 connectivity until clients redo SLAAC.",
+			name, linkType)
 	} else {
-		config.DebugLog("detected ethernet on %s (DLT=%d)", name, linkType)
+		log.Printf("detected ethernet interface on %s (DLT=%d)", name, linkType)
 	}
 
 	// Strict BPF: ICMPv6, HLIM==255, only ND/RA types (133..136).

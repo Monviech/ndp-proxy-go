@@ -7,6 +7,18 @@
 // Initializes all components (ports, cache, routes, hub), starts packet
 // forwarding goroutines, and handles graceful shutdown on SIGINT/SIGTERM.
 //
+// Already installed host routes are intentionally NOT cleaned up on shutdown.
+//
+// Some clients only expose their GUA once during the initial DAD probe.
+// They may not send further NA/NS for a long time, especially after idle periods.
+//
+// On point-to-point (PPP/P2P) uplinks the upstream router never performs ND
+// for downstream GUAs. This means the proxy cannot relearn addresses after
+// a daemon or system restart unless the client performs SLAAC/DAD again.
+//
+// Persisting the existing /128 routes across proxy restarts provides minimal
+// continuity. A full OS reboot will still require clients to re-run SLAAC
+// before external IPv6 connectivity is restored.
 
 package main
 
@@ -111,13 +123,6 @@ func main() {
 
 	hub.Wait()
 	houseWG.Wait()
-
-	// Routes intentionally not cleaned up on shutdown since we need some kind of persistent state here.
-	// Some clients do not send their GUAs in NDP packets for some time, so they would stop receiving return traffic.
-	// When traffic resumes, kernel does NDP and proxy learns from NA responses.
-	// if !config.NoRoutes {
-	//    cache.CleanupAll()
-	// }
 
 	log.Printf("exit clean")
 }
