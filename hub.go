@@ -195,6 +195,13 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 						}
 					}
 
+					// Learn from DAD: client is claiming this address (MAC from Ethernet header)
+					// This is critical for SLAAC clients that only send NDP from link-local after DAD (like iOS)
+					if tgt != nil && ndPkt.eth != nil && !tgt.IsLinkLocalUnicast() {
+						h.Cache.Learn(tgt, ndPkt.eth.SrcMAC, idx, src.Name)
+						h.Config.DebugLog("learned %s from DAD probe on %s (port %d)", tgt, src.Name, idx)
+					}
+
 					h.Config.DebugLog("proxying DAD NS (target %s) to upstream", tgt)
 					// Fall through to forward upstream
 				}
