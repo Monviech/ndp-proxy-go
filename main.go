@@ -60,6 +60,15 @@ func main() {
 		downs = append(downs, p)
 	}
 
+	// Reject point-to-point downstream interfaces, immediate shutdown
+	// The proxy requires multi-access ethernet on downstream
+	for _, d := range downs {
+		if d.IsP2P {
+			log.Fatalf("fatal: downstream interface %s must not be point-to-point (DLT=%d)",
+				d.Name, d.LinkType)
+		}
+	}
+
 	// Initialize route worker
 	rtw := NewRouteWorker(config.RouteQPS, config.RouteBurst, config)
 	defer rtw.Stop()
