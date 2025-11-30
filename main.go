@@ -112,9 +112,12 @@ func main() {
 	hub.Wait()
 	houseWG.Wait()
 
-	if !config.NoRoutes {
-		cache.CleanupAll()
-	}
+	// Routes intentionally not cleaned up on shutdown since we need some kind of persistent state here.
+	// Some clients do not send their GUAs in NDP packets for some time, so they would stop receiving return traffic.
+	// When traffic resumes, kernel does NDP and proxy learns from NA responses.
+	// if !config.NoRoutes {
+	//    cache.CleanupAll()
+	// }
 
 	log.Printf("exit clean")
 }
