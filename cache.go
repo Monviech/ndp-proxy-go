@@ -132,15 +132,3 @@ func (c *Cache) Sweep() {
 		}
 	}
 }
-
-// CleanupAll removes all installed routes (called on shutdown).
-func (c *Cache) CleanupAll() {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.noRt {
-		return
-	}
-	for addr := range c.m {
-		c.rt.Delete(addr.String())
-	}
-}

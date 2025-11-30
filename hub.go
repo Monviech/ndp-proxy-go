@@ -25,6 +25,19 @@
 // the router (no RAs) and the router can't discover clients (NS fails across
 // segment boundaries).
 //
+// Link framing differs between interface types:
+//
+//   Ethernet (most interfaces): [DstMAC|SrcMAC|0x86DD|IPv6|ICMPv6|ND]
+//   - 14-byte header, uses MAC for L2 addressing
+//   - ND options include Source/Target Link-Layer Address (SLLA/TLLA)
+//   - Packets rewritten with egress MAC before forwarding
+//
+//   P2P (PPPoE, tunnels): [LoopbackHdr|IPv6|ICMPv6|ND]
+//   - 4-byte header (DLT_NULL), no MAC addresses
+//   - No SLLA/TLLA options (no L2 addressing on P2P)
+//   - Only RS forwarded upstream (triggers RA); NS/NA skipped (no L2 resolution)
+//   - RAs received from P2P get Ethernet headers added for downstream delivery
+//
 
 package main
 
@@ -153,7 +166,7 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 			}
 
 			// Learn source (skip DAD probes - they have :: source)
-			if !ndPkt.IsDAD() {
+			if !ndPkt.IsDAD() && ndPkt.eth != nil {
 				h.Cache.Learn(ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, idx, src.Name)
 			}
 
@@ -182,12 +195,19 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 						}
 					}
 
+					// Learn from DAD: client is claiming this address (MAC from Ethernet header)
+					// This is critical for SLAAC clients that only send NDP from link-local after DAD (like iOS)
+					if tgt != nil && ndPkt.eth != nil && !tgt.IsLinkLocalUnicast() {
+						h.Cache.Learn(tgt, ndPkt.eth.SrcMAC, idx, src.Name)
+						h.Config.DebugLog("learned %s from DAD probe on %s (port %d)", tgt, src.Name, idx)
+					}
+
 					h.Config.DebugLog("proxying DAD NS (target %s) to upstream", tgt)
 					// Fall through to forward upstream
 				}
 
 				// Regular NS: proxy router LLA locally
-				if !ndPkt.IsDAD() && tgt != nil && h.isRouterLLA(tgt) {
+				if !ndPkt.IsDAD() && tgt != nil && h.isRouterLLA(tgt) && ndPkt.eth != nil {
 					if na := BuildNA(src, tgt, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, true); na != nil {
 						src.Write(na, src.HW, ndPkt.eth.SrcMAC)
 						h.Config.DebugLog("proxied NA (router LLA %s) -> %s on %s", tgt, ndPkt.ipv6.SrcIP, src.Name)
@@ -200,7 +220,7 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 			// Learn the target address in addition to source (link-local)
 			if ndPkt.Type() == layers.ICMPv6TypeNeighborAdvertisement {
 				tgt := ndPkt.Target()
-				if tgt != nil && !tgt.IsLinkLocalUnicast() && !tgt.IsUnspecified() {
+				if tgt != nil && !tgt.IsLinkLocalUnicast() && !tgt.IsUnspecified() && ndPkt.eth != nil {
 					h.Cache.Learn(tgt, ndPkt.eth.SrcMAC, idx, src.Name)
 					h.Config.DebugLog("learned address %s from NA on %s (port %d)", tgt, src.Name, idx)
 				}
@@ -215,6 +235,18 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 			}
 
 			// Forward to upstream
+			// For P2P uplinks: only forward RS (to trigger RA from router)
+			if h.Up.IsP2P {
+				if ndPkt.Type() != layers.ICMPv6TypeRouterSolicitation {
+					continue
+				}
+				h.Config.DebugLog("forwarding RS on point-to-point interface %s to trigger RA", h.Up.Name)
+				// Use P2P-aware RS sender (Loopback framing, no SLLA option)
+				if err := SendRouterSolicitation(h.Up); err != nil {
+					h.Config.DebugLog("RS forward failed on point-to-point interface: %v", err)
+				}
+				continue
+			}
 			buf := ndPkt.Sanitize(h.Up, !h.Config.NoRewrite)
 			h.Up.Write(buf, h.Up.HW, nil)
 		}
@@ -283,7 +315,7 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 				}
 
 				// Regular NS: proxy client address locally if we know where it is
-				if !ndPkt.IsDAD() && tgt != nil && !tgt.IsLinkLocalUnicast() {
+				if !ndPkt.IsDAD() && tgt != nil && !tgt.IsLinkLocalUnicast() && ndPkt.eth != nil {
 					if n, ok := h.Cache.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(h.Down) {
 						if na := BuildNA(h.Up, tgt, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, false); na != nil {
 							h.Up.Write(na, h.Up.HW, ndPkt.eth.SrcMAC)

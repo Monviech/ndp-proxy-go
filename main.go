@@ -7,6 +7,18 @@
 // Initializes all components (ports, cache, routes, hub), starts packet
 // forwarding goroutines, and handles graceful shutdown on SIGINT/SIGTERM.
 //
+// Already installed host routes are intentionally NOT cleaned up on shutdown.
+//
+// Some clients only expose their GUA once during the initial DAD probe.
+// They may not send further NA/NS for a long time, especially after idle periods.
+//
+// On point-to-point (PPP/P2P) uplinks the upstream router never performs ND
+// for downstream GUAs. This means the proxy cannot relearn addresses after
+// a daemon or system restart unless the client performs SLAAC/DAD again.
+//
+// Persisting the existing /128 routes across proxy restarts provides minimal
+// continuity. A full OS reboot will still require clients to re-run SLAAC
+// before external IPv6 connectivity is restored.
 
 package main
 
@@ -46,6 +58,15 @@ func main() {
 		p := OpenPort(n, config)
 		defer p.H.Close()
 		downs = append(downs, p)
+	}
+
+	// Reject point-to-point downstream interfaces, immediate shutdown
+	// The proxy requires multi-access ethernet on downstream
+	for _, d := range downs {
+		if d.IsP2P {
+			log.Fatalf("fatal: downstream interface %s must not be point-to-point (DLT=%d)",
+				d.Name, d.LinkType)
+		}
 	}
 
 	// Initialize route worker
@@ -92,9 +113,13 @@ func main() {
 
 	// Trigger initial Router Solicitation to learn prefixes immediately
 	if up.LLA != nil {
-		config.DebugLog("sending Router Solicitation on %s to bootstrap prefix learning", up.Name)
+		config.DebugLog("sending Router Solicitation on %s", up.Name)
 		if err := SendRouterSolicitation(up); err != nil {
-			log.Printf("warning - failed to send initial RS: %v", err)
+			if up.IsP2P {
+				log.Printf("P2P RS on %s failed: %v - waiting for periodic RA", up.Name, err)
+			} else {
+				log.Printf("warning - failed to send initial RS: %v", err)
+			}
 		}
 	}
 
@@ -107,10 +132,6 @@ func main() {
 
 	hub.Wait()
 	houseWG.Wait()
-
-	if !config.NoRoutes {
-		cache.CleanupAll()
-	}
 
 	log.Printf("exit clean")
 }

@@ -34,22 +34,34 @@ const (
 // NDPacket wraps a parsed ND/RA packet with helper methods.
 type NDPacket struct {
 	raw    []byte
-	eth    *layers.Ethernet
+	eth    *layers.Ethernet // nil for P2P links
 	ipv6   *layers.IPv6
 	icmpv6 *layers.ICMPv6
+	isP2P  bool
 }
 
 // ParseNDPacket validates and parses an ND packet from gopacket.
 func ParseNDPacket(pkt gopacket.Packet) *NDPacket {
-	ethL := pkt.Layer(layers.LayerTypeEthernet)
-	ip6L := pkt.Layer(layers.LayerTypeIPv6)
-	icmpL := pkt.Layer(layers.LayerTypeICMPv6)
+	var eth *layers.Ethernet
+	var isP2P bool
 
-	if ethL == nil || ip6L == nil || icmpL == nil {
+	// Try Ethernet first (most common case)
+	if ethL := pkt.Layer(layers.LayerTypeEthernet); ethL != nil {
+		eth = ethL.(*layers.Ethernet)
+	} else if pkt.Layer(layers.LayerTypeLoopback) != nil {
+		// P2P link (PPPoE, tunnels) - no Ethernet header
+		isP2P = true
+	} else {
 		return nil
 	}
 
-	eth := ethL.(*layers.Ethernet)
+	ip6L := pkt.Layer(layers.LayerTypeIPv6)
+	icmpL := pkt.Layer(layers.LayerTypeICMPv6)
+
+	if ip6L == nil || icmpL == nil {
+		return nil
+	}
+
 	ip6 := ip6L.(*layers.IPv6)
 	icmp := icmpL.(*layers.ICMPv6)
 
@@ -63,15 +75,18 @@ func ParseNDPacket(pkt gopacket.Packet) *NDPacket {
 		return nil
 	}
 
-	// Never leak unicast link-local across links, except allow Router
-	// Advertisements (can be unicast when solicited via RS)
-	icmpType := uint8(icmp.TypeCode.Type())
-	if ip6.DstIP.IsLinkLocalUnicast() &&
-		!isMulticastEther(eth) &&
-		!ip6.DstIP.IsMulticast() &&
-		icmpType != layers.ICMPv6TypeRouterAdvertisement &&
-		icmpType != layers.ICMPv6TypeNeighborAdvertisement {
-		return nil
+	// For Ethernet-framed packets: apply L2 checks
+	if eth != nil {
+		// Never leak unicast link-local across links, except allow Router
+		// Advertisements (can be unicast when solicited via RS)
+		icmpType := uint8(icmp.TypeCode.Type())
+		if ip6.DstIP.IsLinkLocalUnicast() &&
+			!isMulticastEther(eth) &&
+			!ip6.DstIP.IsMulticast() &&
+			icmpType != layers.ICMPv6TypeRouterAdvertisement &&
+			icmpType != layers.ICMPv6TypeNeighborAdvertisement {
+			return nil
+		}
 	}
 
 	return &NDPacket{
@@ -79,6 +94,7 @@ func ParseNDPacket(pkt gopacket.Packet) *NDPacket {
 		eth:    eth,
 		ipv6:   ip6,
 		icmpv6: icmp,
+		isP2P:  isP2P,
 	}
 }
 
@@ -103,7 +119,13 @@ func (p *NDPacket) Target() net.IP {
 
 // getLayer is a helper to extract a specific layer from the raw packet data
 func (p *NDPacket) getLayer(layerType gopacket.LayerType) gopacket.Layer {
-	packet := gopacket.NewPacket(p.raw, layers.LayerTypeEthernet, gopacket.NoCopy)
+	var firstLayer gopacket.Decoder
+	if p.isP2P {
+		firstLayer = layers.LayerTypeLoopback
+	} else {
+		firstLayer = layers.LayerTypeEthernet
+	}
+	packet := gopacket.NewPacket(p.raw, firstLayer, gopacket.NoCopy)
 	return packet.Layer(layerType)
 }
 
@@ -214,6 +236,8 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 		if raLayer := p.getLayer(layers.LayerTypeICMPv6RouterAdvertisement); raLayer != nil {
 			ra := raLayer.(*layers.ICMPv6RouterAdvertisement)
 			// Rewrite source link-layer address option
+			// TODO: P2P RAs lack SLLA - add option if missing for efficiency (saves NS/NA round trip)
+			//       Though will still work without this option, so low priority.
 			ra.Options = rewriteOptions(ra.Options, egress.HW, layers.ICMPv6OptSourceAddress)
 			ndLayer = ra
 		}
@@ -238,9 +262,38 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 		return append([]byte(nil), p.raw...)
 	}
 
+	// Build Ethernet header for egress
+	var ethHeader *layers.Ethernet
+	if p.eth != nil {
+		// Use original Ethernet header as base
+		ethHeader = &layers.Ethernet{
+			SrcMAC:       egress.HW,
+			DstMAC:       p.eth.DstMAC,
+			EthernetType: layers.EthernetTypeIPv6,
+		}
+	} else {
+		// P2P source: construct Ethernet header from scratch
+		var dstMAC net.HardwareAddr
+		if ip6.DstIP.IsMulticast() {
+			// Derive multicast MAC: 33:33:xx:xx:xx:xx
+			dstMAC = make(net.HardwareAddr, 6)
+			dstMAC[0] = 0x33
+			dstMAC[1] = 0x33
+			copy(dstMAC[2:6], ip6.DstIP[12:16])
+		} else {
+			// Broadcast fallback (shouldn't happen often)
+			dstMAC = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+		}
+		ethHeader = &layers.Ethernet{
+			SrcMAC:       egress.HW,
+			DstMAC:       dstMAC,
+			EthernetType: layers.EthernetTypeIPv6,
+		}
+	}
+
 	// Serialize all layers
 	if err := gopacket.SerializeLayers(buf, opts,
-		p.eth,
+		ethHeader,
 		ip6,
 		icmp,
 		ndLayer,
@@ -337,8 +390,16 @@ func BuildNA(egress *Port, srcIP net.IP, dstIP net.IP, dstMAC net.HardwareAddr, 
 
 // SendRouterSolicitation sends a Router Solicitation to trigger an immediate RA.
 func SendRouterSolicitation(port *Port) error {
-	if port == nil || port.HW == nil || port.LLA == nil {
-		return fmt.Errorf("invalid port for RS")
+	if port == nil || port.LLA == nil {
+		return fmt.Errorf("invalid port for RS: missing LLA")
+	}
+
+	if port.IsP2P {
+		return sendRSPointToPoint(port)
+	}
+
+	if port.HW == nil {
+		return fmt.Errorf("invalid port for RS: missing MAC")
 	}
 
 	allRouters := net.ParseIP("ff02::2")
@@ -393,7 +454,55 @@ func SendRouterSolicitation(port *Port) error {
 	return nil
 }
 
+// sendRSPointToPoint sends RS on P2P interface using Loopback framing
+func sendRSPointToPoint(port *Port) error {
+	allRouters := net.ParseIP("ff02::2")
+
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
+
+	ip6 := &layers.IPv6{
+		Version:    6,
+		HopLimit:   NdHopLimit,
+		NextHeader: layers.IPProtocolICMPv6,
+		SrcIP:      port.LLA,
+		DstIP:      allRouters,
+	}
+
+	icmp6 := &layers.ICMPv6{
+		TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeRouterSolicitation, 0),
+	}
+	if err := icmp6.SetNetworkLayerForChecksum(ip6); err != nil {
+		return err
+	}
+
+	// RS without SLLA option (no MAC on P2P)
+	rs := &layers.ICMPv6RouterSolicitation{
+		Options: layers.ICMPv6Options{},
+	}
+
+	// Loopback framing for DLT_NULL
+	err := gopacket.SerializeLayers(buf, opts,
+		&layers.Loopback{Family: layers.ProtocolFamilyIPv6FreeBSD},
+		ip6,
+		icmp6,
+		rs,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Write directly - bypass normal Write() which expects Ethernet
+	port.wmu.Lock()
+	_ = port.H.WritePacketData(buf.Bytes())
+	port.wmu.Unlock()
+	return nil
+}
+
 // isMulticastEther returns true if the Ethernet destination is multicast.
 func isMulticastEther(e *layers.Ethernet) bool {
-	return len(e.DstMAC) > 0 && (e.DstMAC[0]&1) == 1
+	return e != nil && len(e.DstMAC) > 0 && (e.DstMAC[0]&1) == 1
 }
