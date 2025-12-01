@@ -74,15 +74,14 @@ Experimental Features
 
 The proxy now includes experimental support for point-to-point upstream interfaces such as PPPoE.
 Unlike Ethernet links, a PPPoE uplink does not perform Neighbor Discovery (ND) for downstream GUAs.
-This has two important implications:
+This has some important implications:
 
-Only Router Solicitations (RS) are forwarded upstream.
-NS/NA forwarding is intentionally disabled on point-to-point links.
-
-After a host restart, IPv6 connectivity may be delayed until downstream clients perform SLAAC and DAD again.
-This is expected behavior on PPPoE, as the upstream router never probes GUAs.
-
-Ethernet downstream interfaces are still required and point-to-point interfaces cannot be used as downstream ports.
+- Only Router Solicitations (RS) are forwarded upstream.
+- NS/NA forwarding is intentionally disabled on point-to-point links.
+- The `cache-ttl` must be increased, since there are less NA containing a GUA to learn from, otherwise routes might get removed prematurely.
+- Ethernet downstream interfaces are still required. Point-to-point interfaces cannot be used as downstream ports.
+- After a host restart, IPv6 connectivity may be delayed until downstream clients perform SLAAC and DAD again.
+  This is expected behavior on PPPoE, as the upstream (ISP) router never probes GUAs.
 
 ---
 
