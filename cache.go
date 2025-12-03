@@ -37,18 +37,20 @@ type Cache struct {
 	max    int
 	allow  *PrefixDB
 	rt     *RouteWorker
+	pf     *PFWorker
 	noRt   bool
 	config *Config
 }
 
 // NewCache creates a new neighbor cache.
-func NewCache(config *Config, allow *PrefixDB, rt *RouteWorker) *Cache {
+func NewCache(config *Config, allow *PrefixDB, rt *RouteWorker, pf *PFWorker) *Cache {
 	return &Cache{
 		m:      make(map[netip.Addr]Neighbor),
 		ttl:    config.CacheTTL,
 		max:    config.CacheMax,
 		allow:  allow,
 		rt:     rt,
+		pf:     pf,
 		noRt:   config.NoRoutes,
 		config: config,
 	}
@@ -102,6 +104,9 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 		c.rt.Add(addr.String(), ifn)
 	}
 
+	// Add to PF table(s) for this interface
+	c.pf.Add(addr.String(), ifn)
+
 	c.config.DebugLog("learned %s on %s (port %d)", addr, ifn, port)
 }
 
@@ -129,6 +134,7 @@ func (c *Cache) Sweep() {
 			if !c.noRt {
 				c.rt.Delete(addr.String())
 			}
+			c.pf.Delete(addr.String(), n.If)
 		}
 	}
 }
