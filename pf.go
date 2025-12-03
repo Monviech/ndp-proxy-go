@@ -85,7 +85,12 @@ func (p *PFWorker) Add(ip, iface string) {
 	if p == nil {
 		return
 	}
+	// Interface-specific tables
 	for _, table := range p.ifaceToTables[iface] {
+		p.ch <- pfOp{add: true, ip: ip, table: table}
+	}
+	// Global tables (empty key = all interfaces)
+	for _, table := range p.ifaceToTables[""] {
 		p.ch <- pfOp{add: true, ip: ip, table: table}
 	}
 }
@@ -95,8 +100,13 @@ func (p *PFWorker) Delete(ip, iface string) {
 	if p == nil {
 		return
 	}
+	// Interface-specific tables
 	for _, table := range p.ifaceToTables[iface] {
 		p.ch <- pfOp{add: false, ip: ip, table: table}
+	}
+	// Global tables (empty key = all interfaces)
+	for _, table := range p.ifaceToTables[""] {
+		p.ch <- pfOp{add: true, ip: ip, table: table}
 	}
 }
 

@@ -33,8 +33,8 @@ func (f *pfTableFlag) String() string {
 
 func (f *pfTableFlag) Set(value string) error {
 	parts := strings.SplitN(value, ":", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return fmt.Errorf("invalid format, expected interface:table")
+	if len(parts) != 2 || parts[1] == "" { // only table is required
+		return fmt.Errorf("invalid format, expected [interface]:table")
 	}
 	if f.m == nil {
 		f.m = make(map[string][]string)
