@@ -57,7 +57,8 @@ Key Features
   when address conflicts are detected in cache.
 - **Local NA Synthesis** – Responds locally for router and client addresses, reducing
   upstream traffic and hiding network topology.
-- **Automatic Route Management** – Installs and updates per-host /128 routes.
+- **Route Management** – Installs and updates per-host /128 routes.
+- **PF Table Management** - Add learned IP addresses to pf tables via optional flags.
 - **Dynamic Prefix Learning** – Learns valid prefixes from Router Advertisements and
   expires them automatically.
 - **Privacy Extension Support** – Handles temporary RFC 4941 addresses without loss
@@ -65,7 +66,7 @@ Key Features
 - **Multi-Segment Support** – Supports one upstream and multiple downstream
   interfaces.
 - **RFC 4861 Compliance** – Validates HopLimit 255, checksums, and packet structure.
-- **Multi hop** - The proxy can be chained in series to span the single prefix across
+- **Multi-Hop** - The proxy can be chained in series to span the single prefix across
   multiple routers. Tested with 2 routers running the proxy (ISP -> Router1 -> Router2 -> Client).
   Please note the ``pcap-timeout`` for tuning latency.
 
@@ -132,6 +133,7 @@ Flags
 | `--route-qps <n>` | Max route operations per second | 50 |
 | `--route-burst <n>` | Burst of route ops before limiting | 50 |
 | `--pcap-timeout <dur>` | Packet capture timeout (lower = less latency, higher = less CPU) | 50ms |
+| `--pf=interface:table` | pf table mapping (repeatable), interface optional | none |
 
 
 Performance Tuning
@@ -158,6 +160,8 @@ Examples
     # Custom cache settings
     sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 eth0 eth1
 
+    # Add all learned IP addresses to pf table, first flag adds all IP addresses, others are interface specific
+    sudo ndp-proxy-go --pf=:table1 --pf=eth1:table1 --pf=eth2:table2 eth0 eth1 eth2
 
 Packet Flow
 ------------------
@@ -195,8 +199,9 @@ Code Structure
     ├── main.go       – Entry point for startup and shutdown
     ├── port.go       – PCAP interface wrapper with BPF filtering
     ├── config.go     – Command-line flags and runtime configuration
+    ├── prefix.go     – Track and validate prefixes from Router Advertisements
     ├── route.go      – Install per-host /128 routes (optional)
-    └── prefix.go     – Track and validate prefixes from Router Advertisements
+    └── pf.go         - Add learned IPv6 addresses to pf tables (optional)
 
 
 Example combination of ndp-proxy-go with radvd

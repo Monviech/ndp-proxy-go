@@ -5,8 +5,7 @@
 // pf.go - PF table management for learned clients
 //
 // Populates PF tables with IPv6 addresses of learned clients via pfctl.
-// Tables must be pre-created by the user. Mappings are configured via
-// --pf=interface:table flags, allowing flexible interface-to-table assignments.
+// Mappings are configured via flags: --pf=interface:table (interface optional)
 //
 
 package main
