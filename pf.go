@@ -106,7 +106,7 @@ func (p *PFWorker) Delete(ip, iface string) {
 	}
 	// Global tables (empty key = all interfaces)
 	for _, table := range p.ifaceToTables[""] {
-		p.ch <- pfOp{add: true, ip: ip, table: table}
+		p.ch <- pfOp{add: false, ip: ip, table: table}
 	}
 }
 
