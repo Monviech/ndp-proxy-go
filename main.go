@@ -73,9 +73,13 @@ func main() {
 	rtw := NewRouteWorker(config.RouteQPS, config.RouteBurst, config)
 	defer rtw.Stop()
 
+	// Initialize PF worker (nil if no --pf flags given)
+	pfw := NewPFWorker(config)
+	defer pfw.Stop()
+
 	// Initialize prefix database and cache
 	pdb := NewPrefixDB(config)
-	cache := NewCache(config, pdb, rtw)
+	cache := NewCache(config, pdb, rtw, pfw)
 
 	// Create hub
 	hub := NewHub(up, downs, cache, pdb, config)

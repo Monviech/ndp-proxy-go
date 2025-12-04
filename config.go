@@ -15,11 +15,33 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 )
 
 // version is set via ldflags at build time
 var version = "dev"
+
+// pfTableFlag implements flag.Value for repeatable --pf flags.
+type pfTableFlag struct {
+	m map[string][]string
+}
+
+func (f *pfTableFlag) String() string {
+	return ""
+}
+
+func (f *pfTableFlag) Set(value string) error {
+	parts := strings.SplitN(value, ":", 2)
+	if len(parts) != 2 || parts[1] == "" { // only table is required
+		return fmt.Errorf("invalid format, expected [interface]:table")
+	}
+	if f.m == nil {
+		f.m = make(map[string][]string)
+	}
+	f.m[parts[0]] = append(f.m[parts[0]], parts[1])
+	return nil
+}
 
 // Config holds runtime configuration parsed from command-line flags.
 type Config struct {
@@ -33,6 +55,7 @@ type Config struct {
 	RouteQPS    int
 	RouteBurst  int
 	PcapTimeout time.Duration
+	PFTables    map[string][]string // interface -> list of tables
 }
 
 // ShouldForwardType returns true if the given ICMPv6 type should be forwarded.
@@ -48,6 +71,8 @@ func ParseFlags() *Config {
 	showVersion := flag.Bool("version", false, "show version and exit")
 
 	cfg := &Config{}
+	var pfTables pfTableFlag
+
 	flag.BoolVar(&cfg.NoRA, "no-ra", false, "disable forwarding of Router Advertisements (ICMPv6 type 134)")
 	flag.BoolVar(&cfg.NoRoutes, "no-routes", false, "disable per-host route installation and cleanup")
 	flag.BoolVar(&cfg.NoDAD, "no-dad", false, "disable DAD proxying (RFC 4389 non-compliant, may cause conflicts)")
@@ -58,6 +83,7 @@ func ParseFlags() *Config {
 	flag.IntVar(&cfg.RouteQPS, "route-qps", 50, "max /sbin/route operations per second (rate limited)")
 	flag.IntVar(&cfg.RouteBurst, "route-burst", 50, "burst of route operations allowed before limiting")
 	flag.DurationVar(&cfg.PcapTimeout, "pcap-timeout", 50*time.Millisecond, "packet capture timeout (lower = less latency, higher = less CPU)")
+	flag.Var(&pfTables, "pf", "populate PF table with learned clients (format: interface:table, repeatable)")
 	flag.Parse()
 
 	if *showVersion {
@@ -65,6 +91,7 @@ func ParseFlags() *Config {
 		os.Exit(0)
 	}
 
+	cfg.PFTables = pfTables.m
 	return cfg
 }
 
