@@ -164,9 +164,6 @@ If the ISP assigns a new prefix after reboot, stale neighbors simply expire via 
 
 The cache file uses atomic writes (write to temp file, then rename) to prevent corruption.
 
-It should be self-explanatory that the file is useless for other consumers as it does not reflect
-the current state of the proxy; do not use it in scripts.
-
 
 Examples
 ------------------
@@ -186,9 +183,6 @@ Examples
 
     # Add all learned IP addresses to pf table, first flag adds all IP addresses, others are interface specific
     sudo ndp-proxy-go --pf=:table1 --pf=eth1:table1 --pf=eth2:table2 eth0 eth1 eth2
-
-    # Persist cache across restarts
-    sudo ndp-proxy-go --cache-file /var/db/ndpproxy/cache.json eth0 eth1
 
 
 Packet Flow

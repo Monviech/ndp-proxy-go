@@ -13,6 +13,7 @@
 //
 // Persistence: Save() and Load() serialize neighbors to JSON.
 // Load on startup, save on SIGUSR1. Expired entries are skipped during load.
+// Prefixes are included in the JSON for diagnostics but not restored on load.
 // Restored neighbors bypass prefix validation since they were validated when first learned.
 //
 
@@ -148,7 +149,13 @@ func (c *Cache) Sweep() {
 
 // cacheJSON is the JSON structure for persistence.
 type cacheJSON struct {
+	Prefixes  []prefixJSON   `json:"prefixes,omitempty"`
 	Neighbors []neighborJSON `json:"neighbors"`
+}
+
+type prefixJSON struct {
+	Prefix  string    `json:"prefix"`
+	Expires time.Time `json:"expires"`
 }
 
 type neighborJSON struct {
@@ -160,8 +167,19 @@ type neighborJSON struct {
 }
 
 // Save writes the neighbor cache to a JSON file.
+// Prefixes are included for diagnostics but not restored on Load().
 func (c *Cache) Save(path string) error {
 	var out cacheJSON
+
+	// Export prefixes (for diagnostics only, not restored on load)
+	c.allow.mu.RLock()
+	for prefix, exp := range c.allow.m {
+		out.Prefixes = append(out.Prefixes, prefixJSON{
+			Prefix:  prefix.String(),
+			Expires: exp,
+		})
+	}
+	c.allow.mu.RUnlock()
 
 	// Export neighbors
 	c.mu.RLock()
