@@ -83,7 +83,7 @@ This has some important implications:
 - Ethernet downstream interfaces are still required. Point-to-point interfaces cannot be used as downstream ports.
 - After a host restart, IPv6 connectivity may be delayed until downstream clients perform SLAAC and DAD again.
   This is expected behavior on PPPoE, as the upstream (ISP) router never probes GUAs.
-- **Recommended:** Use `--cache-file` to persist the neighbor cache across daemon restarts.
+- **Recommended:** Use `--cache-file` to persist the neighbor cache across daemon restarts and system reboots.
   This significantly improves continuity on PPPoE links by restoring learned addresses and routes immediately.
 
 ---
@@ -151,16 +151,21 @@ Cache Persistence
 ------------------
 
 The ``--cache-file`` flag enables saving the neighbor cache and prefix database to a JSON file.
-This is particularly useful for PPPoE uplinks or large environments where clients cannot
-be relearned quickly enough after a restart.
+This is particularly useful for point-to-point upstreams or large environments where clients cannot
+be relearned quickly enough after a proxy restart or full system reboot.
 
 **Usage:**
 - On startup: The cache file is loaded automatically if it exists. Expired entries are skipped.
 - On SIGUSR1: The current cache state is written to the file.
 
+Prefixes are not persisted — they are always learned fresh from Router Advertisements.
+Restored neighbors bypass prefix validation since they were validated when first learned.
+If the ISP assigns a new prefix after reboot, stale neighbors simply expire via normal TTL.
+
 The cache file uses atomic writes (write to temp file, then rename) to prevent corruption.
 
-It should be self-explanatory that the file is useless for other consumers, do not use it in scripts.
+It should be self-explanatory that the file is useless for other consumers as it does not reflect
+the current state of the proxy; do not use it in scripts.
 
 
 Examples

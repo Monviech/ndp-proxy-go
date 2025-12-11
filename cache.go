@@ -11,8 +11,9 @@
 // unicast packets correctly. Without this, every packet would flood all ports.
 // Prefix validation prevents caching rogue/spoofed addresses.
 //
-// Persistence: Save() and Load() serialize the cache and prefix database to JSON.
+// Persistence: Save() and Load() serialize neighbors to JSON.
 // Load on startup, save on SIGUSR1. Expired entries are skipped during load.
+// Restored neighbors bypass prefix validation since they were validated when first learned.
 //
 
 package main
@@ -147,13 +148,7 @@ func (c *Cache) Sweep() {
 
 // cacheJSON is the JSON structure for persistence.
 type cacheJSON struct {
-	Prefixes  []prefixJSON   `json:"prefixes"`
 	Neighbors []neighborJSON `json:"neighbors"`
-}
-
-type prefixJSON struct {
-	Prefix  string    `json:"prefix"`
-	Expires time.Time `json:"expires"`
 }
 
 type neighborJSON struct {
@@ -164,19 +159,9 @@ type neighborJSON struct {
 	Expires time.Time `json:"expires"`
 }
 
-// Save writes the cache and prefix database to a JSON file.
+// Save writes the neighbor cache to a JSON file.
 func (c *Cache) Save(path string) error {
 	var out cacheJSON
-
-	// Export prefixes
-	c.allow.mu.RLock()
-	for prefix, exp := range c.allow.m {
-		out.Prefixes = append(out.Prefixes, prefixJSON{
-			Prefix:  prefix.String(),
-			Expires: exp,
-		})
-	}
-	c.allow.mu.RUnlock()
 
 	// Export neighbors
 	c.mu.RLock()
@@ -205,12 +190,11 @@ func (c *Cache) Save(path string) error {
 		return err
 	}
 
-	log.Printf("cache saved to %s (%d prefixes, %d neighbors)",
-		path, len(out.Prefixes), len(out.Neighbors))
+	log.Printf("cache saved to %s (%d neighbors)", path, len(out.Neighbors))
 	return nil
 }
 
-// Load restores the cache and prefix database from a JSON file.
+// Load restores the neighbor cache from a JSON file.
 func (c *Cache) Load(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -226,24 +210,9 @@ func (c *Cache) Load(path string) error {
 	}
 
 	now := time.Now()
-	var prefixCount, neighborCount int
+	var neighborCount int
 
-	// Restore prefixes
-	c.allow.mu.Lock()
-	for _, p := range in.Prefixes {
-		if now.After(p.Expires) {
-			continue
-		}
-		prefix, err := netip.ParsePrefix(p.Prefix)
-		if err != nil {
-			continue
-		}
-		c.allow.m[prefix] = p.Expires
-		prefixCount++
-	}
-	c.allow.mu.Unlock()
-
-	// Restore neighbors
+	// Restore neighbors (bypasses prefix validation - addresses were validated when first learned)
 	c.mu.Lock()
 	for _, n := range in.Neighbors {
 		if now.After(n.Expires) {
@@ -278,7 +247,6 @@ func (c *Cache) Load(path string) error {
 	}
 	c.mu.RUnlock()
 
-	log.Printf("cache loaded from %s (%d prefixes, %d neighbors)",
-		path, prefixCount, neighborCount)
+	log.Printf("cache loaded from %s (%d neighbors)", path, neighborCount)
 	return nil
 }
