@@ -11,12 +11,18 @@
 // unicast packets correctly. Without this, every packet would flood all ports.
 // Prefix validation prevents caching rogue/spoofed addresses.
 //
+// Persistence: Save() and Load() serialize the cache and prefix database to JSON.
+// Load on startup, save on SIGUSR1. Expired entries are skipped during load.
+//
 
 package main
 
 import (
+	"encoding/json"
+	"log"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"time"
 )
@@ -137,4 +143,142 @@ func (c *Cache) Sweep() {
 			c.pf.Delete(addr.String(), n.If)
 		}
 	}
+}
+
+// cacheJSON is the JSON structure for persistence.
+type cacheJSON struct {
+	Prefixes  []prefixJSON   `json:"prefixes"`
+	Neighbors []neighborJSON `json:"neighbors"`
+}
+
+type prefixJSON struct {
+	Prefix  string    `json:"prefix"`
+	Expires time.Time `json:"expires"`
+}
+
+type neighborJSON struct {
+	IP      string    `json:"ip"`
+	MAC     string    `json:"mac"`
+	Port    int       `json:"port"`
+	If      string    `json:"interface"`
+	Expires time.Time `json:"expires"`
+}
+
+// Save writes the cache and prefix database to a JSON file.
+func (c *Cache) Save(path string) error {
+	var out cacheJSON
+
+	// Export prefixes
+	c.allow.mu.RLock()
+	for prefix, exp := range c.allow.m {
+		out.Prefixes = append(out.Prefixes, prefixJSON{
+			Prefix:  prefix.String(),
+			Expires: exp,
+		})
+	}
+	c.allow.mu.RUnlock()
+
+	// Export neighbors
+	c.mu.RLock()
+	for addr, n := range c.m {
+		out.Neighbors = append(out.Neighbors, neighborJSON{
+			IP:      addr.String(),
+			MAC:     n.MAC.String(),
+			Port:    n.Port,
+			If:      n.If,
+			Expires: n.Exp,
+		})
+	}
+	c.mu.RUnlock()
+
+	// Atomic write
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+
+	log.Printf("cache saved to %s (%d prefixes, %d neighbors)",
+		path, len(out.Prefixes), len(out.Neighbors))
+	return nil
+}
+
+// Load restores the cache and prefix database from a JSON file.
+func (c *Cache) Load(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // fresh start
+		}
+		return err
+	}
+
+	var in cacheJSON
+	if err := json.Unmarshal(data, &in); err != nil {
+		return err
+	}
+
+	now := time.Now()
+	var prefixCount, neighborCount int
+
+	// Restore prefixes
+	c.allow.mu.Lock()
+	for _, p := range in.Prefixes {
+		if now.After(p.Expires) {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(p.Prefix)
+		if err != nil {
+			continue
+		}
+		c.allow.m[prefix] = p.Expires
+		prefixCount++
+	}
+	c.allow.mu.Unlock()
+
+	// Restore neighbors
+	c.mu.Lock()
+	for _, n := range in.Neighbors {
+		if now.After(n.Expires) {
+			continue
+		}
+		addr, err := netip.ParseAddr(n.IP)
+		if err != nil {
+			continue
+		}
+		mac, err := net.ParseMAC(n.MAC)
+		if err != nil {
+			continue
+		}
+		if _, exists := c.m[addr]; exists {
+			continue
+		}
+		if c.max > 0 && len(c.m) >= c.max {
+			break
+		}
+		c.m[addr] = Neighbor{MAC: mac, Port: n.Port, If: n.If, Exp: n.Expires}
+		neighborCount++
+	}
+	c.mu.Unlock()
+
+	// Install routes and PF entries outside the lock
+	c.mu.RLock()
+	for addr, n := range c.m {
+		if !c.noRt {
+			c.rt.Add(addr.String(), n.If)
+		}
+		c.pf.Add(addr.String(), n.If)
+	}
+	c.mu.RUnlock()
+
+	log.Printf("cache loaded from %s (%d prefixes, %d neighbors)",
+		path, prefixCount, neighborCount)
+	return nil
 }

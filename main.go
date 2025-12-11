@@ -81,6 +81,13 @@ func main() {
 	pdb := NewPrefixDB(config)
 	cache := NewCache(config, pdb, rtw, pfw)
 
+	// Load persistent cache if configured
+	if config.CacheFile != "" {
+		if err := cache.Load(config.CacheFile); err != nil {
+			log.Printf("warning: failed to load cache: %v", err)
+		}
+	}
+
 	// Create hub
 	hub := NewHub(up, downs, cache, pdb, config)
 
@@ -88,6 +95,21 @@ func main() {
 	ctx, stop := context.WithCancel(context.Background())
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	// SIGUSR1 handler for cache persistence
+	usr1 := make(chan os.Signal, 1)
+	signal.Notify(usr1, syscall.SIGUSR1)
+	go func() {
+		for range usr1 {
+			if config.CacheFile != "" {
+				if err := cache.Save(config.CacheFile); err != nil {
+					log.Printf("error saving cache: %v", err)
+				}
+			} else {
+				log.Printf("SIGUSR1 received but --cache-file not set, ignoring")
+			}
+		}
+	}()
 
 	// Periodic housekeeping
 	var houseWG sync.WaitGroup
@@ -108,10 +130,11 @@ func main() {
 		}
 	}()
 
-	log.Printf("upstream=%s downstream=%s no-ra=%t no-routes=%t no-dad=%t no-rewrite-lla=%t cache-ttl=%s cache-max=%d route-qps=%d route-burst=%d pcap-timeout=%s",
+	log.Printf("upstream=%s downstream=%s no-ra=%t no-routes=%t no-dad=%t no-rewrite-lla=%t cache-ttl=%s cache-max=%d route-qps=%d route-burst=%d pcap-timeout=%s cache-file=%q",
 		up.Name, strings.Join(args[1:], ","),
 		config.NoRA, config.NoRoutes, config.NoDAD, config.NoRewrite,
-		config.CacheTTL, config.CacheMax, config.RouteQPS, config.RouteBurst, config.PcapTimeout)
+		config.CacheTTL, config.CacheMax, config.RouteQPS, config.RouteBurst, config.PcapTimeout,
+		config.CacheFile)
 
 	hub.Start(ctx)
 

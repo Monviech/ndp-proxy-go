@@ -19,6 +19,7 @@
 # ndp_proxy_go_upstream (string):   Upstream interface (required)
 # ndp_proxy_go_downstream (string): Downstream interface(s), space-separated (required)
 # ndp_proxy_go_flags (string):      Additional flags (e.g., --debug, --no-ra)
+# ndp_proxy_go_cache_file (string): Path to persistent cache file (optional)
 
 . /etc/rc.subr
 
@@ -33,12 +34,14 @@ load_rc_config $name
 : ${ndp_proxy_go_upstream:=""}
 : ${ndp_proxy_go_downstream:=""}
 : ${ndp_proxy_go_flags:=""}
+: ${ndp_proxy_go_cache_file:=""}
 
 command="/usr/local/sbin/ndp-proxy-go"
 pidfile="/var/run/${name}.pid"
 
 start_precmd="ndp_proxy_go_precmd"
 start_cmd="ndp_proxy_go_start"
+stop_precmd="ndp_proxy_go_prestop"
 
 ndp_proxy_go_precmd()
 {
@@ -62,13 +65,35 @@ ndp_proxy_go_precmd()
             return 1
         fi
     done
+
+    # Create cache directory if cache_file is specified
+    if [ -n "${ndp_proxy_go_cache_file}" ]; then
+        install -d -m 755 "$(dirname "${ndp_proxy_go_cache_file}")"
+    fi
 }
 
 ndp_proxy_go_start()
 {
+    _cache_flag=""
+    if [ -n "${ndp_proxy_go_cache_file}" ]; then
+        _cache_flag="--cache-file ${ndp_proxy_go_cache_file}"
+    fi
+
     echo "Starting ${name}."
     /usr/sbin/daemon -S -s notice -l daemon -T ndpproxy -m 3 -p ${pidfile} \
-        ${command} ${ndp_proxy_go_flags} ${ndp_proxy_go_upstream} ${ndp_proxy_go_downstream}
+        ${command} ${ndp_proxy_go_flags} ${_cache_flag} ${ndp_proxy_go_upstream} ${ndp_proxy_go_downstream}
+}
+
+ndp_proxy_go_prestop()
+{
+    # Save cache before stopping if --cache-file is configured
+    if [ -r "${pidfile}" ]; then
+        _pid=$(cat "${pidfile}")
+        if [ -n "${_pid}" ]; then
+            kill -USR1 "${_pid}" 2>/dev/null
+            sleep 1
+        fi
+    fi
 }
 
 run_rc_command "$@"

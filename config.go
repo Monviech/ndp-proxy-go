@@ -56,6 +56,7 @@ type Config struct {
 	RouteBurst  int
 	PcapTimeout time.Duration
 	PFTables    map[string][]string // interface -> list of tables
+	CacheFile   string              // path to persistent cache file (optional)
 }
 
 // ShouldForwardType returns true if the given ICMPv6 type should be forwarded.
@@ -84,6 +85,7 @@ func ParseFlags() *Config {
 	flag.IntVar(&cfg.RouteBurst, "route-burst", 50, "burst of route operations allowed before limiting")
 	flag.DurationVar(&cfg.PcapTimeout, "pcap-timeout", 50*time.Millisecond, "packet capture timeout (lower = less latency, higher = less CPU)")
 	flag.Var(&pfTables, "pf", "populate PF table with learned clients (format: interface:table, repeatable)")
+	flag.StringVar(&cfg.CacheFile, "cache-file", "", "path to persistent cache file for state across restarts (SIGUSR1 to save)")
 	flag.Parse()
 
 	if *showVersion {
