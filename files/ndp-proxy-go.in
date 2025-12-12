@@ -84,6 +84,7 @@ ndp_proxy_go_start()
 ndp_proxy_go_prestop()
 {
     # Save cache before stopping if --cache-file is configured
+    [ -n "$ndp_proxy_go_cache_file" ] || return 0
     [ -f "$pidfile" ] || return 0
     kill -USR1 "$(cat "$pidfile")" 2>/dev/null
 }
