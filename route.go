@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"os/exec"
 	"strings"
 	"time"
@@ -73,7 +72,7 @@ func NewRouteWorker(qps, burst int, config *Config) *RouteWorker {
 				cancel()
 
 				if err != nil {
-					log.Printf("route %s err: %v (out: %s)", action, err, strings.TrimSpace(string(out)))
+					r.config.DebugLog("route %s err: %v (out: %s)", action, err, strings.TrimSpace(string(out)))
 				} else {
 					if op.add {
 						r.config.DebugLog("route installed: %s via %s", op.ip, op.iface)
