@@ -158,7 +158,7 @@ be relearned quickly enough after a proxy restart or full system reboot.
 - On startup: The cache file is loaded automatically if it exists. Expired entries are skipped.
 - On SIGUSR1: The current cache state is written to the file.
 
-Prefixes are not persisted — they are always learned fresh from Router Advertisements.
+Prefixes are saved for diagnostics but not restored on load — they are always learned fresh from Router Advertisements.
 Restored neighbors bypass prefix validation since they were validated when first learned.
 If the ISP assigns a new prefix after reboot, stale neighbors simply expire via normal TTL.
 
