@@ -132,11 +132,11 @@ Flags
 | `--no-dad` | Disable DAD proxying (RFC 4389 non-compliant, may cause conflicts) | disabled |
 | `--cache-ttl <dur>` | Neighbor cache lifetime | 10m |
 | `--cache-max <n>` | Maximum learned neighbors | 4096 |
+| `--cache-file <path>` | Persist cache to JSON file; load on startup, save on SIGUSR1 | none |
 | `--route-qps <n>` | Max route operations per second | 50 |
 | `--route-burst <n>` | Burst of route ops before limiting | 50 |
 | `--pcap-timeout <dur>` | Packet capture timeout (lower = less latency, higher = less CPU) | 50ms |
 | `--pf=interface:table` | pf table mapping (repeatable), interface optional | none |
-| `--cache-file <path>` | Persist cache to JSON file; load on startup, save on SIGUSR1 | none |
 
 
 Performance Tuning
