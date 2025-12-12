@@ -83,6 +83,8 @@ This has some important implications:
 - Ethernet downstream interfaces are still required. Point-to-point interfaces cannot be used as downstream ports.
 - After a host restart, IPv6 connectivity may be delayed until downstream clients perform SLAAC and DAD again.
   This is expected behavior on PPPoE, as the upstream (ISP) router never probes GUAs.
+- **Recommended:** Use `--cache-file` to persist the neighbor cache across daemon restarts and system reboots.
+  This significantly improves continuity on PPPoE links by restoring learned addresses and routes immediately.
 
 ---
 
@@ -134,6 +136,7 @@ Flags
 | `--route-burst <n>` | Burst of route ops before limiting | 50 |
 | `--pcap-timeout <dur>` | Packet capture timeout (lower = less latency, higher = less CPU) | 50ms |
 | `--pf=interface:table` | pf table mapping (repeatable), interface optional | none |
+| `--cache-file <path>` | Persist cache to JSON file; load on startup, save on SIGUSR1 | none |
 
 
 Performance Tuning
@@ -142,6 +145,24 @@ Performance Tuning
 ``--pcap-timeout`` controls CPU usage vs. NDP responsiveness.
 Lower values (e.g., 25 ms) minimize latency during cache refresh at the cost of more CPU.
 Higher values (100–250 ms) reduce CPU use but may introduce small latency spikes.
+
+
+Cache Persistence
+------------------
+
+The ``--cache-file`` flag enables saving the neighbor cache and prefix database to a JSON file.
+This is particularly useful for point-to-point upstreams or large environments where clients cannot
+be relearned quickly enough after a proxy restart or full system reboot.
+
+**Usage:**
+- On startup: The cache file is loaded automatically if it exists. Expired entries are skipped.
+- On SIGUSR1: The current cache state is written to the file.
+
+Prefixes are saved for diagnostics but not restored on load — they are always learned fresh from Router Advertisements.
+Restored neighbors bypass prefix validation since they were validated when first learned.
+If the ISP assigns a new prefix after reboot, stale neighbors simply expire via normal TTL.
+
+The cache file uses atomic writes (write to temp file, then rename) to prevent corruption.
 
 
 Examples
@@ -162,6 +183,7 @@ Examples
 
     # Add all learned IP addresses to pf table, first flag adds all IP addresses, others are interface specific
     sudo ndp-proxy-go --pf=:table1 --pf=eth1:table1 --pf=eth2:table2 eth0 eth1 eth2
+
 
 Packet Flow
 ------------------
@@ -195,7 +217,7 @@ Code Structure
     ndp-proxy-go/
     ├── hub.go        – Core forwarding engine bridging NDP between interfaces
     ├── packet.go     – Parse/validate/build ICMPv6 ND packets (RFC 4861)
-    ├── cache.go      – Track client IP → MAC → interface mappings
+    ├── cache.go      – Track client IP → MAC → interface mappings, persistence
     ├── main.go       – Entry point for startup and shutdown
     ├── port.go       – PCAP interface wrapper with BPF filtering
     ├── config.go     – Command-line flags and runtime configuration

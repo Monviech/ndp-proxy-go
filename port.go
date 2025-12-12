@@ -67,8 +67,7 @@ func OpenPort(name string, config *Config) *Port {
 	linkType := h.LinkType()
 	isP2P := (linkType == layers.LinkTypeNull || linkType == layers.LinkTypeLoop || linkType == layers.LinkTypeRaw)
 	if isP2P {
-		log.Printf("(experimental) detected point-to-point interface on %s (DLT=%d). "+
-			"If this host restarts, IPv6 may be temporarily unavailable until clients perform SLAAC/DAD again.",
+		log.Printf("(experimental) detected point-to-point interface on %s (DLT=%d).",
 			name, linkType)
 	} else {
 		log.Printf("detected ethernet interface on %s (DLT=%d)", name, linkType)
