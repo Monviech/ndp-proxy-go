@@ -39,10 +39,10 @@ type RouteWorker struct {
 }
 
 // NewRouteWorker creates a rate-limited route worker.
-func NewRouteWorker(qps, burst int, config *Config) *RouteWorker {
+func NewRouteWorker(qps int, config *Config) *RouteWorker {
 	r := &RouteWorker{
 		ch:      make(chan routeOp, 4096),
-		limiter: rate.NewLimiter(rate.Limit(qps), burst),
+		limiter: rate.NewLimiter(rate.Limit(qps), qps),
 		done:    make(chan struct{}),
 		config:  config,
 	}

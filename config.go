@@ -22,6 +22,14 @@ import (
 // version is set via ldflags at build time
 var version = "dev"
 
+// These are used both as flag defaults and as safe fallbacks.
+const (
+	defaultCacheTTL    = 10 * time.Minute
+	defaultCacheMax    = 4096
+	defaultRouteQPS    = 50
+	defaultPcapTimeout = 50 * time.Millisecond
+)
+
 // pfTableFlag implements flag.Value for repeatable --pf flags.
 type pfTableFlag struct {
 	m map[string][]string
@@ -53,7 +61,6 @@ type Config struct {
 	CacheTTL    time.Duration
 	CacheMax    int
 	RouteQPS    int
-	RouteBurst  int
 	PcapTimeout time.Duration
 	PFTables    map[string][]string // interface -> list of tables
 	CacheFile   string              // path to persistent cache file (optional)
@@ -79,14 +86,27 @@ func ParseFlags() *Config {
 	flag.BoolVar(&cfg.NoDAD, "no-dad", false, "disable DAD proxying (RFC 4389 non-compliant, may cause conflicts)")
 	flag.BoolVar(&cfg.NoRewrite, "no-rewrite-lla", false, "do not rewrite SLLA/TLLA options (unsafe in L2-isolated setups)")
 	flag.BoolVar(&cfg.Debug, "debug", false, "enable verbose debug logging")
-	flag.DurationVar(&cfg.CacheTTL, "cache-ttl", 10*time.Minute, "neighbor cache TTL")
-	flag.IntVar(&cfg.CacheMax, "cache-max", 4096, "max neighbors to track")
-	flag.IntVar(&cfg.RouteQPS, "route-qps", 50, "max /sbin/route operations per second (rate limited)")
-	flag.IntVar(&cfg.RouteBurst, "route-burst", 50, "burst of route operations allowed before limiting")
-	flag.DurationVar(&cfg.PcapTimeout, "pcap-timeout", 50*time.Millisecond, "packet capture timeout (lower = less latency, higher = less CPU)")
+	flag.DurationVar(&cfg.CacheTTL, "cache-ttl", defaultCacheTTL, "neighbor cache TTL")
+	flag.IntVar(&cfg.CacheMax, "cache-max", defaultCacheMax, "max neighbors to track")
+	flag.IntVar(&cfg.RouteQPS, "route-qps", defaultRouteQPS, "max /sbin/route operations per second (rate limited)")
+	flag.DurationVar(&cfg.PcapTimeout, "pcap-timeout", defaultPcapTimeout, "packet capture timeout (lower = less latency, higher = less CPU)")
 	flag.Var(&pfTables, "pf", "populate PF table with learned clients (format: interface:table, repeatable)")
 	flag.StringVar(&cfg.CacheFile, "cache-file", "", "path to persistent cache file for state across restarts (SIGUSR1 to save)")
 	flag.Parse()
+
+	// Sanitize values
+	if cfg.CacheTTL <= 0 {
+		cfg.CacheTTL = defaultCacheTTL
+	}
+	if cfg.CacheMax < 1 {
+		cfg.CacheMax = defaultCacheMax
+	}
+	if cfg.RouteQPS < 1 {
+		cfg.RouteQPS = defaultRouteQPS
+	}
+	if cfg.PcapTimeout <= 0 {
+		cfg.PcapTimeout = defaultPcapTimeout
+	}
 
 	if *showVersion {
 		fmt.Printf("ndp-proxy-go %s\n", version)
