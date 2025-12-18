@@ -7,4 +7,4 @@ require (
 	golang.org/x/time v0.14.0
 )
 
-require golang.org/x/sys v0.0.0-20190412213103-97732733099d // indirect
+require golang.org/x/sys v0.39.0 // indirect
