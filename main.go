@@ -74,7 +74,7 @@ func main() {
 	defer rtw.Stop()
 
 	// Initialize PF worker (nil if no --pf flags given)
-	pfw := NewPFWorker(config)
+	pfw := NewPFWorker(config.PFQPS, config)
 	defer pfw.Stop()
 
 	// Initialize prefix database and cache
@@ -130,10 +130,10 @@ func main() {
 		}
 	}()
 
-	log.Printf("upstream=%s downstream=%s no-ra=%t no-routes=%t no-dad=%t no-rewrite-lla=%t cache-ttl=%s cache-max=%d route-qps=%d pcap-timeout=%s cache-file=%q",
+	log.Printf("upstream=%s downstream=%s no-ra=%t no-routes=%t no-dad=%t no-rewrite-lla=%t cache-ttl=%s cache-max=%d route-qps=%d pf-qps=%d pcap-timeout=%s cache-file=%q",
 		up.Name, strings.Join(args[1:], ","),
 		config.NoRA, config.NoRoutes, config.NoDAD, config.NoRewrite,
-		config.CacheTTL, config.CacheMax, config.RouteQPS, config.PcapTimeout,
+		config.CacheTTL, config.CacheMax, config.RouteQPS, config.PFQPS, config.PcapTimeout,
 		config.CacheFile)
 
 	hub.Start(ctx)

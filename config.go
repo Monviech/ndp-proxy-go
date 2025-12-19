@@ -27,6 +27,7 @@ const (
 	defaultCacheTTL    = 10 * time.Minute
 	defaultCacheMax    = 4096
 	defaultRouteQPS    = 50
+	defaultPFQPS       = 50
 	defaultPcapTimeout = 50 * time.Millisecond
 )
 
@@ -61,6 +62,7 @@ type Config struct {
 	CacheTTL    time.Duration
 	CacheMax    int
 	RouteQPS    int
+	PFQPS       int
 	PcapTimeout time.Duration
 	PFTables    map[string][]string // interface -> list of tables
 	CacheFile   string              // path to persistent cache file (optional)
@@ -89,6 +91,7 @@ func ParseFlags() *Config {
 	flag.DurationVar(&cfg.CacheTTL, "cache-ttl", defaultCacheTTL, "neighbor cache TTL")
 	flag.IntVar(&cfg.CacheMax, "cache-max", defaultCacheMax, "max neighbors to track")
 	flag.IntVar(&cfg.RouteQPS, "route-qps", defaultRouteQPS, "max /sbin/route operations per second (rate limited)")
+	flag.IntVar(&cfg.PFQPS, "pf-qps", defaultPFQPS, "max /sbin/pfctl operations per second (rate limited)")
 	flag.DurationVar(&cfg.PcapTimeout, "pcap-timeout", defaultPcapTimeout, "packet capture timeout (lower = less latency, higher = less CPU)")
 	flag.Var(&pfTables, "pf", "populate PF table with learned clients (format: interface:table, repeatable)")
 	flag.StringVar(&cfg.CacheFile, "cache-file", "", "path to persistent cache file for state across restarts (SIGUSR1 to save)")
@@ -103,6 +106,9 @@ func ParseFlags() *Config {
 	}
 	if cfg.RouteQPS < 1 {
 		cfg.RouteQPS = defaultRouteQPS
+	}
+	if cfg.PFQPS < 1 {
+		cfg.PFQPS = defaultPFQPS
 	}
 	if cfg.PcapTimeout <= 0 {
 		cfg.PcapTimeout = defaultPcapTimeout

@@ -13,7 +13,10 @@ package main
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // pfOp describes a single pfctl table add or delete operation.
@@ -26,19 +29,21 @@ type pfOp struct {
 // PFWorker manages PF table operations for learned clients.
 type PFWorker struct {
 	ch            chan pfOp
+	limiter       *rate.Limiter
 	done          chan struct{}
 	config        *Config
 	ifaceToTables map[string][]string
 }
 
-// NewPFWorker creates a PF table worker from interface:table mappings.
-func NewPFWorker(config *Config) *PFWorker {
+// NewPFWorker creates a rate-limited PF table worker from interface:table mappings.
+func NewPFWorker(qps int, config *Config) *PFWorker {
 	if len(config.PFTables) == 0 {
 		return nil
 	}
 
 	p := &PFWorker{
 		ch:            make(chan pfOp, 4096),
+		limiter:       rate.NewLimiter(rate.Limit(qps), qps),
 		done:          make(chan struct{}),
 		config:        config,
 		ifaceToTables: config.PFTables,
@@ -54,6 +59,11 @@ func (p *PFWorker) run() {
 		case <-p.done:
 			return
 		case op := <-p.ch:
+			// Rate limit PF updates to avoid pfctl thrashing
+			if err := p.limiter.Wait(context.Background()); err != nil {
+				continue
+			}
+
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			var cmd *exec.Cmd
 			if op.add {
@@ -61,7 +71,7 @@ func (p *PFWorker) run() {
 			} else {
 				cmd = exec.CommandContext(ctx, "/sbin/pfctl", "-t", op.table, "-T", "delete", op.ip)
 			}
-			_, err := cmd.CombinedOutput()
+			out, err := cmd.CombinedOutput()
 			cancel()
 
 			if err != nil {
@@ -69,7 +79,7 @@ func (p *PFWorker) run() {
 				if op.add {
 					action = "add"
 				}
-				p.config.DebugLog("pfctl %s %s in <%s>: %v", action, op.ip, op.table, err)
+				p.config.DebugLog("pfctl %s %s in <%s>: %v (out: %s)", action, op.ip, op.table, err, strings.TrimSpace(string(out)))
 			} else if op.add {
 				p.config.DebugLog("pfctl add %s to <%s>", op.ip, op.table)
 			} else {
