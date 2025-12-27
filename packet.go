@@ -235,10 +235,23 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 	case layers.ICMPv6TypeRouterAdvertisement:
 		if raLayer := p.getLayer(layers.LayerTypeICMPv6RouterAdvertisement); raLayer != nil {
 			ra := raLayer.(*layers.ICMPv6RouterAdvertisement)
-			// Rewrite source link-layer address option
-			// TODO: P2P RAs lack SLLA - add option if missing for efficiency (saves NS/NA round trip)
-			//       Though will still work without this option, so low priority.
+			// Rewrite source link-layer address option if it exists
 			ra.Options = rewriteOptions(ra.Options, egress.HW, layers.ICMPv6OptSourceAddress)
+			// Add SLLA option if missing (e.g. when converting P2P RAs to Ethernet)
+			// Saves an extra NS/NA round trip on downstream links
+			hasSourceAddr := false
+			for _, opt := range ra.Options {
+				if opt.Type == layers.ICMPv6OptSourceAddress {
+					hasSourceAddr = true
+					break
+				}
+			}
+			if !hasSourceAddr && len(egress.HW) >= 6 {
+				ra.Options = append(ra.Options, layers.ICMPv6Option{
+					Type: layers.ICMPv6OptSourceAddress,
+					Data: egress.HW[0:6],
+				})
+			}
 			ndLayer = ra
 		}
 	case layers.ICMPv6TypeNeighborSolicitation:
