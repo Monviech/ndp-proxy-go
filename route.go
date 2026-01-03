@@ -40,6 +40,10 @@ type RouteWorker struct {
 
 // NewRouteWorker creates a rate-limited route worker.
 func NewRouteWorker(qps int, config *Config) *RouteWorker {
+	if config.NoRoutes {
+		return nil
+	}
+
 	r := &RouteWorker{
 		ch:      make(chan routeOp, 4096),
 		limiter: rate.NewLimiter(rate.Limit(qps), qps),
@@ -89,15 +93,24 @@ func NewRouteWorker(qps int, config *Config) *RouteWorker {
 
 // Add enqueues a route add operation.
 func (r *RouteWorker) Add(ip, iface string) {
+	if r == nil {
+		return
+	}
 	r.ch <- routeOp{add: true, ip: ip, iface: iface}
 }
 
 // Delete enqueues a route delete operation.
 func (r *RouteWorker) Delete(ip string) {
+	if r == nil {
+		return
+	}
 	r.ch <- routeOp{add: false, ip: ip}
 }
 
 // Stop shuts down the route worker.
 func (r *RouteWorker) Stop() {
+	if r == nil {
+		return
+	}
 	close(r.done)
 }

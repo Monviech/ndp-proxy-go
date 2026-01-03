@@ -47,7 +47,6 @@ type Cache struct {
 	allow  *PrefixDB
 	rt     *RouteWorker
 	pf     *PFWorker
-	noRt   bool
 	config *Config
 }
 
@@ -60,7 +59,6 @@ func NewCache(config *Config, allow *PrefixDB, rt *RouteWorker, pf *PFWorker) *C
 		allow:  allow,
 		rt:     rt,
 		pf:     pf,
-		noRt:   config.NoRoutes,
 		config: config,
 	}
 }
@@ -91,7 +89,7 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Existing neighbor: refresh TTL and allow roaming between ports.
+	// Existing neighbor: refresh TTL and allow same-MAC roaming to update routes/PF.
 	if old, ok := c.m[addr]; ok && now.Before(old.Exp) {
 		// Only allow roaming when the MAC matches the existing entry.
 		if !bytes.Equal(old.MAC, mac) {
@@ -109,10 +107,8 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 
 		if moved {
 			// Refresh route and PF entries to the new interface.
-			if !c.noRt {
-				c.rt.Delete(addr.String())
-				c.rt.Add(addr.String(), ifn)
-			}
+			c.rt.Delete(addr.String())
+			c.rt.Add(addr.String(), ifn)
 			c.pf.Delete(addr.String(), prevIf)
 			c.pf.Add(addr.String(), ifn)
 			c.config.DebugLog("cache entry moved %s from %s (port %d) to %s (port %d)", addr, prevIf, prevPort, ifn, port)
@@ -133,9 +129,7 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 	c.m[addr] = Neighbor{MAC: mac, Port: port, If: ifn, Exp: expire}
 
 	// Add per-host route asynchronously
-	if !c.noRt {
-		c.rt.Add(addr.String(), ifn)
-	}
+	c.rt.Add(addr.String(), ifn)
 
 	// Add to PF table(s) for this interface
 	c.pf.Add(addr.String(), ifn)
@@ -164,9 +158,7 @@ func (c *Cache) Sweep() {
 	for addr, n := range c.m {
 		if now.After(n.Exp) {
 			delete(c.m, addr)
-			if !c.noRt {
-				c.rt.Delete(addr.String())
-			}
+			c.rt.Delete(addr.String())
 			c.pf.Delete(addr.String(), n.If)
 		}
 	}
@@ -283,9 +275,7 @@ func (c *Cache) Load(path string) error {
 	// Install routes and PF entries outside the lock
 	c.mu.RLock()
 	for addr, n := range c.m {
-		if !c.noRt {
-			c.rt.Add(addr.String(), n.If)
-		}
+		c.rt.Add(addr.String(), n.If)
 		c.pf.Add(addr.String(), n.If)
 	}
 	c.mu.RUnlock()
