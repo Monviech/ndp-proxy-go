@@ -20,6 +20,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 	"net"
@@ -90,10 +91,34 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// If entry exists and still valid, just refresh expiry
+	// Existing neighbor: refresh TTL and allow roaming between ports.
 	if old, ok := c.m[addr]; ok && now.Before(old.Exp) {
+		// Only allow roaming when the MAC matches the existing entry.
+		if !bytes.Equal(old.MAC, mac) {
+			c.config.DebugLog("cache entry MAC mismatch %s on %s (port %d), ignoring", addr, ifn, port)
+			return
+		}
+
+		prevIf := old.If
+		prevPort := old.Port
+		moved := prevPort != port || prevIf != ifn
 		old.Exp = expire
+		old.Port = port
+		old.If = ifn
 		c.m[addr] = old
+
+		if moved {
+			// Refresh route and PF entries to the new interface.
+			if !c.noRt {
+				c.rt.Delete(addr.String())
+				c.rt.Add(addr.String(), ifn)
+			}
+			c.pf.Delete(addr.String(), prevIf)
+			c.pf.Add(addr.String(), ifn)
+			c.config.DebugLog("cache entry moved %s from %s (port %d) to %s (port %d)", addr, prevIf, prevPort, ifn, port)
+			return
+		}
+
 		c.config.DebugLog("cache entry TTL refreshed %s on %s (port %d)", addr, ifn, port)
 		return
 	}
