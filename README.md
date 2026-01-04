@@ -10,7 +10,7 @@ are available for OPNsense.
 The Issue
 ------------------
 
-Modern IPv6 networks face challenges when using a FreeBSD host as a router between
+Modern IPv6 networks can face challenges when using a FreeBSD router between
 an ISP gateway and internal clients.
 
 Some ISPs and cloud providers do not offer IPv6 prefix delegation (DHCPv6-PD).
@@ -34,55 +34,50 @@ The Solution
 
 ``ndp-proxy-go`` makes downstream clients seem to reside on the same
 Ethernet segment as the ISP router while maintaining routing and firewall separation
-on the FreeBSD host.
+on the FreeBSD router.
 
----
+Other NDP proxy tools focus on a single piece, such as relaying NS/NA, and rely on
+separate components for RA forwarding, prefix tracking, or route handling.
+``ndp-proxy-go`` integrates those pieces into one daemon: it forwards RAs,
+proxies DAD/NS/NA, synthesizes local answers, and installs per-host routes.
+The result is a complete L3 solution rather than a partial relay.
 
-How It Works
-------------------
-
-The daemon proxies and synthesizes IPv6 Neighbor Discovery messages, forwarding or
-responding as needed to maintain connectivity across isolated segments.
+``ndp-proxy-go`` is expected to run on a FreeBSD based router and is considered stable
+for small to medium sized home (CPE) and cloud setups. It is not intended for ISP deployments,
+but for the network edge. The flag defaults are optimized for this usecase.
 
 ---
 
 Key Features
 ------------------
 
-- **ND Proxying** – Relays Neighbor Solicitation and Neighbor Advertisement messages
-  between interfaces for transparent address resolution across segments.
-- **RA Proxying** – Forwards Router Advertisements from upstream to all downstream
-  interfaces, enabling SLAAC autoconfiguration across isolated segments.
+- **Multi-Segment Support** – Supports one upstream and multiple downstream interfaces.
+- **NDP Proxying** – Relays Neighbor Solicitation and Neighbor Advertisement messages
+  between interfaces for transparent address resolution across segments. Responds locally
+  for router and client addresses, reducing upstream traffic and hiding network topology.
+- **RA Proxying** – Forwards Router Advertisements and Router Solicitations from upstream
+  to all downstream interfaces, enabling SLAAC autoconfiguration across segments.
 - **DAD Proxying** – Forwards DAD probes between interfaces and responds immediately
   when address conflicts are detected in cache.
-- **Local NA Synthesis** – Responds locally for router and client addresses, reducing
-  upstream traffic and hiding network topology.
-- **Route Management** – Installs and updates per-host /128 routes.
-- **PF Table Management** - Add learned IP addresses to pf tables via optional flags.
 - **Dynamic Prefix Learning** – Learns valid prefixes from Router Advertisements and
-  expires them automatically.
-- **Privacy Extension Support** – Handles temporary RFC 4941 addresses without loss
-  of connectivity.
-- **Multi-Segment Support** – Supports one upstream and multiple downstream
-  interfaces.
-- **RFC 4861 Compliance** – Validates HopLimit 255, checksums, and packet structure.
-- **Multi-Hop** - The proxy can be chained in series to span the single prefix across
-  multiple routers. Tested with 2 routers running the proxy (ISP -> Router1 -> Router2 -> Client).
-  Please note the ``pcap-timeout`` for tuning latency.
+  expires them automatically. Handles temporary RFC 4941 addresses and changing prefixes
+  without loss of connectivity.
+- **Route Management** – Installs and updates per-host /128 routes.
+- **PF Table Management** – Add learned IP addresses to pf tables.
 
 Experimental Features
 ---------------------
 
-The proxy now includes experimental support for point-to-point upstream interfaces such as PPPoE.
-Unlike Ethernet links, a PPPoE uplink does not perform Neighbor Discovery (ND) for downstream GUAs.
+The proxy includes experimental support for point-to-point upstream interfaces such as PPPoE.
+Unlike Ethernet links, a PPPoE uplink does not perform Neighbor Discovery (ND) for downstream addresses.
 This has some important implications:
 
 - Only Router Solicitations (RS) are forwarded upstream.
 - NS/NA forwarding is intentionally disabled on point-to-point links.
-- The `cache-ttl` must be increased, since there are less NA containing a GUA to learn from, otherwise routes might get removed prematurely.
+- The `--cache-ttl` must be increased, since there are fewer NAs containing an address to learn from, otherwise routes might get removed prematurely.
 - Ethernet downstream interfaces are still required. Point-to-point interfaces cannot be used as downstream ports.
-- After a host restart, IPv6 connectivity may be delayed until downstream clients perform SLAAC and DAD again.
-  This is expected behavior on PPPoE, as the upstream (ISP) router never probes GUAs.
+- After a router restart, IPv6 connectivity may be delayed until downstream clients perform SLAAC and DAD again.
+  This is expected behavior on PPPoE, as the upstream (ISP) router never probes addresses.
 - **Recommended:** Use `--cache-file` to persist the neighbor cache across daemon restarts and system reboots.
   This significantly improves continuity on PPPoE links by restoring learned addresses and routes immediately.
 
@@ -97,7 +92,7 @@ Quick Start
 - Both interfaces must have link-local addresses
 - Upstream interface must accept Router Advertisements (``accept_rtadv``)
 - Upstream router must send RAs
-- Downstream clients must use the FreeBSD host as their router
+- Downstream clients must use the FreeBSD router as their default gateway
 
 ---
 
@@ -179,10 +174,10 @@ Examples
     sudo ndp-proxy-go eth0 eth1 eth2 eth3
 
     # Custom cache settings
-    sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 eth0 eth1
+    sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 --cache-file /var/db/ndpproxy/cache.json eth0 eth1
 
     # Add all learned IP addresses to pf table, first flag adds all IP addresses, others are interface specific
-    sudo ndp-proxy-go --pf=:table1 --pf=eth1:table1 --pf=eth2:table2 eth0 eth1 eth2
+    sudo ndp-proxy-go --pf=:table0 --pf=eth1:table1 --pf=eth2:table2 eth0 eth1 eth2
 
 
 Packet Flow
@@ -190,24 +185,29 @@ Packet Flow
 
 ## Downstream → Upstream (Client to ISP Router)
 
-1. Client sends RS/NS toward upstream router.
-2. ``ndp-proxy-go`` learns the client's IPv6 and MAC address.
-3. Installs per-host route for return traffic.
-4. DAD probes: Checked against cache for conflicts with other downstream clients.
-   If conflict found, immediate NA sent on same interface. Otherwise forwarded upstream.
+1. Client sends RS/NS/NA toward upstream router.
+2. ``ndp-proxy-go`` learns the client's IPv6 and MAC address from NS/NA/DAD,
+   but only for non-link-local addresses within RA-learned prefixes.
+3. Installs per-host routes for learned addresses (unless ``--no-routes`` is set).
+4. DAD probes: Checked against cache for conflicts on other downstream interfaces.
+   If conflict found, immediate NA sent on the same interface. Otherwise forwarded upstream.
 5. Regular NS: Forwards packet upstream (rewriting SLLA), or synthesizes NA
    if NS targets the router's LLA.
+6. NA from downstream is forwarded upstream (including DAD responses) unless ``--no-dad`` is set.
+7. On point-to-point upstreams (PPPoE), only RS is forwarded upstream; NS/NA are skipped.
 
 ## Upstream → Downstream (ISP Router to Client)
 
-1. Router sends RA/NA packets.
-2. ``ndp-proxy-go`` learns router LLA and prefixes from RA.
-3. Forwards multicast RAs to all downstream interfaces.
-4. DAD probes from any upstream device (router or other clients) are checked
-   against cache; if a downstream client owns the address, defends it immediately
-   with NA sent upstream, otherwise forwards the DAD probe to all downstream interfaces.
-5. Regular NS: Synthesizes NA upstream if NS targets a downstream client.
-6. Routes unicast packets to the correct downstream interface.
+1. Router sends RA/NS/NA packets.
+2. ``ndp-proxy-go`` learns router LLA and prefixes from RA (even if RA forwarding is disabled).
+3. Multicast RAs are forwarded to all downstream interfaces (unless ``--no-ra`` is set).
+4. DAD probes from any upstream device are checked against cache; if a downstream
+   client owns the address, it is defended immediately with NA sent upstream,
+   otherwise the DAD probe is forwarded to all downstream interfaces.
+5. Regular NS: Synthesizes NA upstream if NS targets a known downstream client.
+6. NA from upstream: multicast NAs are forwarded to all downstream interfaces for DAD;
+   unicast NAs are forwarded to a specific downstream port if known, otherwise limited-flooded.
+7. Other unicast packets are routed to the correct downstream interface via per-host routes.
 
 
 Code Structure
@@ -287,14 +287,7 @@ interface eth1 {
 
 # LAN 2 (eth2)
 interface eth2 {
-    AdvSendAdvert on;
-    MaxRtrAdvInterval 30;
-
-    prefix ::/64 {
-        Base6Interface eth0;
-        AdvOnLink on;
-        AdvAutonomous on;
-    };
+   # same as LAN1
 };
 ```
 
