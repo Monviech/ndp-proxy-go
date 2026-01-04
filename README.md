@@ -80,10 +80,8 @@ This has some important implications:
   This significantly improves continuity on PPPoE links by restoring learned addresses and routes immediately.
 
 
-Quick Start
+Prerequisites
 ------------------
-
-**Prerequisites**
 
 - FreeBSD with IPv6 routing enabled (``ipv6_gateway_enable="YES"``)
 - Both interfaces must have link-local addresses
