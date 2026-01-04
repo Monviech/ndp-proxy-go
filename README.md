@@ -27,7 +27,6 @@ directly to the ISP network.
 
 However, proper Layer 3 isolation and routing are not possible without a proxy.
 
----
 
 The Solution
 ------------------
@@ -46,7 +45,6 @@ The result is a complete L3 solution rather than a partial relay.
 for small to medium sized home (CPE) and cloud setups. It is not intended for ISP deployments,
 but for the network edge. The flag defaults are optimized for this usecase.
 
----
 
 Key Features
 ------------------
@@ -81,7 +79,6 @@ This has some important implications:
 - **Recommended:** Use `--cache-file` to persist the neighbor cache across daemon restarts and system reboots.
   This significantly improves continuity on PPPoE links by restoring learned addresses and routes immediately.
 
----
 
 Quick Start
 ------------------
@@ -94,7 +91,6 @@ Quick Start
 - Upstream router must send RAs
 - Downstream clients must use the FreeBSD router as their default gateway
 
----
 
 Installation
 ------------------
@@ -107,13 +103,33 @@ From Source:
     cd ndp-proxy-go
     make install
 
----
 
 Command-Line Usage
 ------------------
 
 
     ndp-proxy-go [flags] <up_if> <down_if1> [<down_if2> ...]
+
+
+Examples
+------------------
+
+
+    # Basic usage (eth0 = WAN, eth1 = LAN)
+    sudo ndp-proxy-go eth0 eth1
+
+    # With debug logging
+    sudo ndp-proxy-go --debug eth0 eth1
+
+    # Multiple downstream interfaces
+    sudo ndp-proxy-go eth0 eth1 eth2 eth3
+
+    # Custom cache settings
+    sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 --cache-file /var/db/ndpproxy/cache.json eth0 eth1
+
+    # Add all learned IP addresses to pf table, first flag adds all IP addresses, others are interface specific
+    sudo ndp-proxy-go --pf=:table0 --pf=eth1:table1 --pf=eth2:table2 eth0 eth1 eth2
+
 
 Flags
 ------------------
@@ -160,24 +176,20 @@ If the ISP assigns a new prefix after reboot, stale neighbors simply expire via 
 The cache file uses atomic writes (write to temp file, then rename) to prevent corruption.
 
 
-Examples
+Code Structure
 ------------------
 
 
-    # Basic usage (eth0 = WAN, eth1 = LAN)
-    sudo ndp-proxy-go eth0 eth1
-
-    # With debug logging
-    sudo ndp-proxy-go --debug eth0 eth1
-
-    # Multiple downstream interfaces
-    sudo ndp-proxy-go eth0 eth1 eth2 eth3
-
-    # Custom cache settings
-    sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 --cache-file /var/db/ndpproxy/cache.json eth0 eth1
-
-    # Add all learned IP addresses to pf table, first flag adds all IP addresses, others are interface specific
-    sudo ndp-proxy-go --pf=:table0 --pf=eth1:table1 --pf=eth2:table2 eth0 eth1 eth2
+    ndp-proxy-go/
+    ├── hub.go        – Core forwarding engine bridging NDP between interfaces
+    ├── packet.go     – Parse/validate/build ICMPv6 ND packets (RFC 4861)
+    ├── cache.go      – Track client IP → MAC → interface mappings, persistence
+    ├── main.go       – Entry point for startup and shutdown
+    ├── port.go       – PCAP interface wrapper with BPF filtering
+    ├── config.go     – Command-line flags and runtime configuration
+    ├── prefix.go     – Track and validate prefixes from Router Advertisements
+    ├── route.go      – Install per-host /128 routes (optional)
+    └── pf.go         - Add learned IPv6 addresses to pf tables (optional)
 
 
 Packet Flow
@@ -208,22 +220,6 @@ Packet Flow
 6. NA from upstream: multicast NAs are forwarded to all downstream interfaces for DAD;
    unicast NAs are forwarded to a specific downstream port if known, otherwise limited-flooded.
 7. Other unicast packets are routed to the correct downstream interface via per-host routes.
-
-
-Code Structure
-------------------
-
-
-    ndp-proxy-go/
-    ├── hub.go        – Core forwarding engine bridging NDP between interfaces
-    ├── packet.go     – Parse/validate/build ICMPv6 ND packets (RFC 4861)
-    ├── cache.go      – Track client IP → MAC → interface mappings, persistence
-    ├── main.go       – Entry point for startup and shutdown
-    ├── port.go       – PCAP interface wrapper with BPF filtering
-    ├── config.go     – Command-line flags and runtime configuration
-    ├── prefix.go     – Track and validate prefixes from Router Advertisements
-    ├── route.go      – Install per-host /128 routes (optional)
-    └── pf.go         - Add learned IPv6 addresses to pf tables (optional)
 
 
 Example combination of ndp-proxy-go with radvd
