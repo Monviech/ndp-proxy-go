@@ -239,19 +239,8 @@ Here is a short example:
 
 Run `ndp-proxy-go` without proxying RAs:
 
-CLI:
 ```
 sudo ndp-proxy-go --no-ra eth0 eth1 eth2
-```
-
-Service script:
-```
-# /etc/rc.conf.d/ndp_proxy_go
-
-ndp_proxy_go_enable="YES"
-ndp_proxy_go_upstream="eth0"
-ndp_proxy_go_downstream="eth1 eth2"
-ndp_proxy_go_flags="--no-ra"
 ```
 
 Run a `radvd` configuration that tracks the WAN interface and sends the same prefix on all LAN interfaces:
