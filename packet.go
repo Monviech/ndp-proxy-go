@@ -254,6 +254,28 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 			}
 			ndLayer = ra
 		}
+	case layers.ICMPv6TypeRouterSolicitation:
+		if rsLayer := p.getLayer(layers.LayerTypeICMPv6RouterSolicitation); rsLayer != nil {
+			rs := rsLayer.(*layers.ICMPv6RouterSolicitation)
+			// Rewrite source link-layer address option if it exists
+			rs.Options = rewriteOptions(rs.Options, egress.HW, layers.ICMPv6OptSourceAddress)
+			// Add SLLA option if missing (some clients, e.g. Linux/Windows, omit it;
+			// strict upstream routers may silently drop RS without SLLA)
+			hasSourceAddr := false
+			for _, opt := range rs.Options {
+				if opt.Type == layers.ICMPv6OptSourceAddress {
+					hasSourceAddr = true
+					break
+				}
+			}
+			if !hasSourceAddr && len(egress.HW) >= 6 {
+				rs.Options = append(rs.Options, layers.ICMPv6Option{
+					Type: layers.ICMPv6OptSourceAddress,
+					Data: egress.HW[0:6],
+				})
+			}
+			ndLayer = rs
+		}
 	case layers.ICMPv6TypeNeighborSolicitation:
 		if nsLayer := p.getLayer(layers.LayerTypeICMPv6NeighborSolicitation); nsLayer != nil {
 			ns := nsLayer.(*layers.ICMPv6NeighborSolicitation)
