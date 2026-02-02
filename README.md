@@ -52,7 +52,7 @@ Key Features
 - **Multi-Segment Support** – Supports one upstream and multiple downstream interfaces.
 - **NDP Proxying** – Relays Neighbor Solicitation and Neighbor Advertisement messages
   between interfaces for transparent address resolution across segments. Responds locally
-  for router and client addresses, reducing upstream traffic and hiding network topology.
+  for router and client addresses.
 - **RA Proxying** – Forwards Router Advertisements and Router Solicitations from upstream
   to all downstream interfaces, enabling SLAAC autoconfiguration across segments.
 - **DAD Proxying** – Forwards DAD probes between interfaces and responds immediately
