@@ -7,6 +7,8 @@
 // Tracks learned mappings of IPv6 address → (MAC, port, interface) with TTL.
 // Only caches addresses within RA-advertised prefixes. Triggers route installation.
 //
+// Link-local addresses are learned for unicast RA forwarding.
+//
 // We need to remember which downstream port each client is on to forward
 // unicast packets correctly. Without this, every packet would flood all ports.
 // Prefix validation prevents caching rogue/spoofed addresses.
@@ -66,13 +68,13 @@ func NewCache(config *Config, allow *PrefixDB, rt *RouteWorker, pf *PFWorker) *C
 // Learn records a neighbor discovery, optionally installing a route.
 func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 	// Sanity and scope checks
-	if ip == nil || mac == nil || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+	if ip == nil || mac == nil || ip.IsUnspecified() {
 		return
 	}
 	if ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
 		return
 	}
-	if c.allow != nil && !c.allow.Contains(ip) {
+	if c.allow != nil && !c.allow.Contains(ip) && !ip.IsLinkLocalUnicast() {
 		c.config.DebugLog("skip learn %s (not in allowed RA prefixes)", ip)
 		return
 	}
@@ -107,6 +109,9 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 
 		if moved {
 			// Refresh route and PF entries to the new interface.
+			if ip.IsLinkLocalUnicast() {
+				return
+			}
 			c.rt.Delete(addr.String())
 			c.rt.Add(addr.String(), ifn)
 			c.pf.Delete(addr.String(), prevIf)
@@ -128,11 +133,11 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 	// Insert or replace
 	c.m[addr] = Neighbor{MAC: mac, Port: port, If: ifn, Exp: expire}
 
-	// Add per-host route asynchronously
-	c.rt.Add(addr.String(), ifn)
-
-	// Add to PF table(s) for this interface
-	c.pf.Add(addr.String(), ifn)
+	// Install route/PF but skip for LLA (not routable, no firewall rules needed)
+	if !ip.IsLinkLocalUnicast() {
+		c.rt.Add(addr.String(), ifn)
+		c.pf.Add(addr.String(), ifn)
+	}
 
 	c.config.DebugLog("learned %s on %s (port %d)", addr, ifn, port)
 }
@@ -275,8 +280,10 @@ func (c *Cache) Load(path string) error {
 	// Install routes and PF entries outside the lock
 	c.mu.RLock()
 	for addr, n := range c.m {
-		c.rt.Add(addr.String(), n.If)
-		c.pf.Add(addr.String(), n.If)
+		if !addr.IsLinkLocalUnicast() {
+			c.rt.Add(addr.String(), n.If)
+			c.pf.Add(addr.String(), n.If)
+		}
 	}
 	c.mu.RUnlock()
 
