@@ -3,8 +3,9 @@ ndp-proxy-go
 
 **IPv6 Neighbor Discovery Protocol (NDP) Proxy**
 
-A [plugin](https://github.com/opnsense/plugins/tree/master/net/ndp-proxy-go) and 
-[port](https://github.com/opnsense/ports/tree/master/opnsense/ndp-proxy-go) 
+A [plugin](https://github.com/opnsense/plugins/tree/master/net/ndp-proxy-go),
+[port](https://github.com/opnsense/ports/tree/master/opnsense/ndp-proxy-go) and
+[documentation](https://docs.opnsense.org/manual/ndp-proxy-go.html)
 are available for OPNsense.
 
 The Issue
