@@ -53,10 +53,10 @@ Key Features
 - **NDP Proxying** – Relays Neighbor Solicitation and Neighbor Advertisement messages
   between interfaces for transparent address resolution across segments. Responds locally
   for router and client addresses.
-- **RA Proxying** – Forwards Router Advertisements and Router Solicitations from upstream
-  to all downstream interfaces, enabling SLAAC autoconfiguration across segments.
 - **DAD Proxying** – Forwards DAD probes between interfaces and responds immediately
   when address conflicts are detected in cache.
+- **RA Proxying** – Forwards Router Solicitations and unicast/multicast Router Advertisements
+  to enable SLAAC autoconfiguration of clients.
 - **Dynamic Prefix Learning** – Learns valid prefixes from Router Advertisements and
   expires them automatically. Handles temporary RFC 4941 addresses and changing prefixes
   without loss of connectivity.
@@ -197,7 +197,8 @@ Packet Flow
 
 1. Client sends RS/NS/NA toward upstream router.
 2. ``ndp-proxy-go`` learns the client's IPv6 and MAC address from NS/NA/DAD,
-   but only for non-link-local addresses within RA-learned prefixes.
+   for non-link-local addresses within RA-learned prefixes, and any link-local address
+   (used for unicast RA forwarding).
 3. Installs per-host routes for learned addresses (unless ``--no-routes`` is set).
 4. DAD probes: Checked against cache for conflicts on other downstream interfaces.
    If conflict found, immediate NA sent on the same interface. Otherwise forwarded upstream.
@@ -210,7 +211,8 @@ Packet Flow
 
 1. Router sends RA/NS/NA packets.
 2. ``ndp-proxy-go`` learns router LLA and prefixes from RA (even if RA forwarding is disabled).
-3. Multicast RAs are forwarded to all downstream interfaces (unless ``--no-ra`` is set).
+3. Multicast RAs are forwarded to all downstream interfaces, unicast RAs are forwarded to the
+   exact link-local target in the cache (unless ``--no-ra`` is set).
 4. DAD probes from any upstream device are checked against cache; if a downstream
    client owns the address, it is defended immediately with NA sent upstream,
    otherwise the DAD probe is forwarded to all downstream interfaces.
