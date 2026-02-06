@@ -305,14 +305,17 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 				if ndPkt.IsDAD() && !h.Config.NoDAD {
 					if tgt != nil {
 						// Check if any downstream client owns this address
-						if n, ok := h.Cache.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(h.Down) {
-							// Respond immediately to protect downstream client
-							allNodes := net.ParseIP("ff02::1")
-							allNodesMAC := net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0x01}
-							if na := BuildNA(h.Up, h.Up.LLA, allNodes, allNodesMAC, tgt, false); na != nil {
-								h.Up.Write(na, h.Up.HW, allNodesMAC)
-								h.Config.DebugLog("DAD conflict: upstream wants %s but exists on %s (port %d)", tgt, n.If, n.Port)
-								continue
+						// Skip link-locals: upstream and downstream LLAs are on different segments
+						if !tgt.IsLinkLocalUnicast() {
+							if n, ok := h.Cache.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(h.Down) {
+								// Respond immediately to protect downstream client
+								allNodes := net.ParseIP("ff02::1")
+								allNodesMAC := net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0x01}
+								if na := BuildNA(h.Up, h.Up.LLA, allNodes, allNodesMAC, tgt, false); na != nil {
+									h.Up.Write(na, h.Up.HW, allNodesMAC)
+									h.Config.DebugLog("DAD conflict: upstream wants %s but exists on %s (port %d)", tgt, n.If, n.Port)
+									continue
+								}
 							}
 						}
 					}
