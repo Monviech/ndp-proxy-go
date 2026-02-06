@@ -234,10 +234,15 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 				}
 			}
 
+			// Suppress RS on ethernet uplinks when RA forwarding is disabled
+			if !h.Up.IsP2P && h.Config.NoRA && ndPkt.Type() == layers.ICMPv6TypeRouterSolicitation {
+				continue
+			}
+
 			// Forward to upstream
 			// For P2P uplinks: only forward RS (to trigger RA from router)
 			if h.Up.IsP2P {
-				if ndPkt.Type() != layers.ICMPv6TypeRouterSolicitation {
+				if ndPkt.Type() != layers.ICMPv6TypeRouterSolicitation || h.Config.NoRA {
 					continue
 				}
 				h.Config.DebugLog("forwarding RS on point-to-point interface %s to trigger RA", h.Up.Name)
