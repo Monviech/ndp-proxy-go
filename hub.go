@@ -247,6 +247,12 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 				}
 				continue
 			}
+
+			// Log RS forwarding on Ethernet uplinks
+			if ndPkt.Type() == layers.ICMPv6TypeRouterSolicitation {
+				h.Config.DebugLog("forwarding RS from %s (src %s) to upstream %s", src.Name, ndPkt.ipv6.SrcIP, h.Up.Name)
+			}
+
 			buf := ndPkt.Sanitize(h.Up, !h.Config.NoRewrite)
 			h.Up.Write(buf, h.Up.HW, nil)
 		}
@@ -344,6 +350,9 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 			// Forward to downstream port(s)
 			if ndPkt.IsMulticast() {
 				// Multicast: broadcast to all downlinks
+				if ndPkt.Type() == layers.ICMPv6TypeRouterAdvertisement {
+					h.Config.DebugLog("forwarding multicast RA from %s to all downstream interfaces", h.Up.Name)
+				}
 				for _, d := range h.Down {
 					buf := ndPkt.Sanitize(d, !h.Config.NoRewrite)
 					d.Write(buf, d.HW, nil)
@@ -352,10 +361,16 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 				// Unicast: targeted delivery or limited flood
 				if n, ok := h.Cache.Lookup(ndPkt.ipv6.DstIP); ok && n.Port >= 0 && n.Port < len(h.Down) {
 					d := h.Down[n.Port]
+					if ndPkt.Type() == layers.ICMPv6TypeRouterAdvertisement {
+						h.Config.DebugLog("forwarding unicast RA from %s to %s (dst %s, port %d)", h.Up.Name, d.Name, ndPkt.ipv6.DstIP, n.Port)
+					}
 					buf := ndPkt.Sanitize(d, !h.Config.NoRewrite)
 					d.Write(buf, d.HW, n.MAC)
 				} else {
 					// Limited flood (cap to 8 ports to avoid amplification)
+					if ndPkt.Type() == layers.ICMPv6TypeRouterAdvertisement {
+						h.Config.DebugLog("cache lookup failed for unicast RA (dst %s), limited flood to %d ports", ndPkt.ipv6.DstIP, min(len(h.Down), 8))
+					}
 					for i, d := range h.Down {
 						if i >= 8 {
 							break
