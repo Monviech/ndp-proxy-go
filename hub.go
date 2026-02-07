@@ -234,7 +234,7 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 				}
 			}
 
-			// Suppress RS on ethernet uplinks when RA forwarding is disabled
+			// Suppress RS when RA forwarding is disabled
 			if h.Config.NoRA && ndPkt.Type() == layers.ICMPv6TypeRouterSolicitation {
 				continue
 			}
