@@ -235,29 +235,21 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 			}
 
 			// Suppress RS on ethernet uplinks when RA forwarding is disabled
-			if !h.Up.IsP2P && h.Config.NoRA && ndPkt.Type() == layers.ICMPv6TypeRouterSolicitation {
+			if h.Config.NoRA && ndPkt.Type() == layers.ICMPv6TypeRouterSolicitation {
 				continue
 			}
 
-			// Forward to upstream
-			// For P2P uplinks: only forward RS (to trigger RA from router)
-			if h.Up.IsP2P {
-				if ndPkt.Type() != layers.ICMPv6TypeRouterSolicitation || h.Config.NoRA {
-					continue
-				}
-				h.Config.DebugLog("forwarding RS on point-to-point interface %s to trigger RA", h.Up.Name)
-				// Use P2P-aware RS sender (Loopback framing, no SLLA option)
-				if err := SendRouterSolicitation(h.Up); err != nil {
-					h.Config.DebugLog("RS forward failed on point-to-point interface: %v", err)
-				}
-				continue
-			}
-
-			// Log RS forwarding on Ethernet uplinks
+			// Log RS forwarding
 			if ndPkt.Type() == layers.ICMPv6TypeRouterSolicitation {
 				h.Config.DebugLog("forwarding RS from %s (src %s) to upstream %s", src.Name, ndPkt.ipv6.SrcIP, h.Up.Name)
 			}
 
+			// For P2P uplinks: only forward RS (to trigger RA from router), but skip all other NDP packets
+			if h.Up.IsP2P && ndPkt.Type() == layers.ICMPv6TypeRouterSolicitation {
+				continue
+			}
+
+			// Forward to upstream
 			buf := ndPkt.Sanitize(h.Up, !h.Config.NoRewrite)
 			h.Up.Write(buf, h.Up.HW, nil)
 		}
