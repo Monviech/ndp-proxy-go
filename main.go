@@ -142,11 +142,7 @@ func main() {
 	if up.LLA != nil {
 		config.DebugLog("sending Router Solicitation on %s", up.Name)
 		if err := SendRouterSolicitation(up); err != nil {
-			if up.IsP2P {
-				log.Printf("P2P RS on %s failed: %v - waiting for periodic RA", up.Name, err)
-			} else {
-				log.Printf("warning - failed to send initial RS: %v", err)
-			}
+			config.DebugLog("initial RS on %s failed: %v - waiting for periodic RA", up.Name, err)
 		}
 	}
 
