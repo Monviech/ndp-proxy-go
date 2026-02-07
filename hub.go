@@ -245,7 +245,7 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 			}
 
 			// For P2P uplinks: only forward RS (to trigger RA from router), but skip all other NDP packets
-			if h.Up.IsP2P && ndPkt.Type() == layers.ICMPv6TypeRouterSolicitation {
+			if h.Up.IsP2P && ndPkt.Type() != layers.ICMPv6TypeRouterSolicitation {
 				continue
 			}
 
