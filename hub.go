@@ -244,8 +244,11 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 				h.Config.DebugLog("forwarding RS from %s (src %s) to upstream %s", src.Name, ndPkt.ipv6.SrcIP, h.Up.Name)
 			}
 
-			// For P2P uplinks: only forward RS (to trigger RA from router), but skip all other NDP packets
-			if h.Up.IsP2P && ndPkt.Type() != layers.ICMPv6TypeRouterSolicitation {
+			// P2P uplinks: generate fresh RS to trigger RA, suppress all downstream NDP forwarding
+			if h.Up.IsP2P {
+				if ndPkt.Type() == layers.ICMPv6TypeRouterSolicitation {
+					_ = SendRouterSolicitation(h.Up)
+				}
 				continue
 			}
 
