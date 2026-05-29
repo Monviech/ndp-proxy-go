@@ -19,6 +19,11 @@
 // Persisting the existing /128 routes across proxy restarts provides minimal
 // continuity. A full OS reboot will still require clients to re-run SLAAC
 // before external IPv6 connectivity is restored.
+//
+// The default setup is fully dynamic, yet statically set prefixes and routers
+// can supplement RA-learned state. They are intended only for on-link GUA deployments
+// where the upstream router does not advertise usable prefix information.
+//
 
 package main
 
@@ -79,6 +84,9 @@ func main() {
 
 	// Initialize prefix database and cache
 	pdb := NewPrefixDB(config)
+	for _, prefix := range config.StaticPrefixes {
+		pdb.AddStatic(prefix)
+	}
 	cache := NewCache(config, pdb, rtw, pfw)
 
 	// Load persistent cache if configured
@@ -90,6 +98,9 @@ func main() {
 
 	// Create hub
 	hub := NewHub(up, downs, cache, pdb, config)
+	for _, router := range config.StaticRouters {
+		hub.AddStaticRouterLLA(router)
+	}
 
 	// Setup context and signal handling
 	ctx, stop := context.WithCancel(context.Background())
@@ -130,11 +141,11 @@ func main() {
 		}
 	}()
 
-	log.Printf("upstream=%s downstream=%s no-ra=%t no-routes=%t no-dad=%t no-rewrite-lla=%t cache-ttl=%s cache-max=%d route-qps=%d pf-qps=%d pcap-timeout=%s cache-file=%q",
+	log.Printf("upstream=%s downstream=%s no-ra=%t no-routes=%t no-dad=%t no-rewrite-lla=%t cache-ttl=%s cache-max=%d route-qps=%d pf-qps=%d pcap-timeout=%s cache-file=%q static-prefixes=%d static-routers=%d",
 		up.Name, strings.Join(args[1:], ","),
 		config.NoRA, config.NoRoutes, config.NoDAD, config.NoRewrite,
 		config.CacheTTL, config.CacheMax, config.RouteQPS, config.PFQPS, config.PcapTimeout,
-		config.CacheFile)
+		config.CacheFile, len(config.StaticPrefixes), len(config.StaticRouters))
 
 	hub.Start(ctx)
 

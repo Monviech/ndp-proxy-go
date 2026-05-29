@@ -56,6 +56,21 @@ func (p *PrefixDB) Add(prefix *net.IPNet, valid time.Duration) {
 	p.config.DebugLog("RA prefix learned: %s (valid %s)", netipPrefix, valid)
 }
 
+// AddStatic registers a manually trusted prefix without expiry.
+func (p *PrefixDB) AddStatic(prefix netip.Prefix) {
+	if !prefix.Addr().Is6() {
+		return
+	}
+
+	prefix = prefix.Masked()
+
+	p.mu.Lock()
+	p.m[prefix] = time.Time{}
+	p.mu.Unlock()
+
+	p.config.DebugLog("static prefix added: %s", prefix)
+}
+
 // Contains checks if an IP is within any valid prefix.
 func (p *PrefixDB) Contains(ip net.IP) bool {
 	if ip == nil {
@@ -71,7 +86,7 @@ func (p *PrefixDB) Contains(ip net.IP) bool {
 	defer p.mu.RUnlock()
 	now := time.Now()
 	for prefix, exp := range p.m {
-		if now.After(exp) {
+		if !exp.IsZero() && now.After(exp) {
 			continue
 		}
 		if prefix.Contains(addr) {
@@ -87,7 +102,7 @@ func (p *PrefixDB) Sweep() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for prefix, exp := range p.m {
-		if now.After(exp) {
+		if !exp.IsZero() && now.After(exp) {
 			delete(p.m, prefix)
 		}
 	}
