@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -52,20 +53,56 @@ func (f *pfTableFlag) Set(value string) error {
 	return nil
 }
 
+// staticPrefixFlag implements flag.Value for repeatable --static-prefix flags.
+type staticPrefixFlag []netip.Prefix
+
+func (f *staticPrefixFlag) String() string {
+	return ""
+}
+
+func (f *staticPrefixFlag) Set(value string) error {
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil || !prefix.Addr().Is6() {
+		return fmt.Errorf("invalid IPv6 prefix %q", value)
+	}
+
+	*f = append(*f, prefix.Masked())
+	return nil
+}
+
+// staticRouterFlag implements flag.Value for repeatable --static-router flags.
+type staticRouterFlag []netip.Addr
+
+func (f *staticRouterFlag) String() string {
+	return ""
+}
+
+func (f *staticRouterFlag) Set(value string) error {
+	addr, err := netip.ParseAddr(value)
+	if err != nil || !addr.Is6() || !addr.IsLinkLocalUnicast() {
+		return fmt.Errorf("invalid IPv6 link-local router address %q", value)
+	}
+
+	*f = append(*f, addr)
+	return nil
+}
+
 // Config holds runtime configuration parsed from command-line flags.
 type Config struct {
-	NoRA        bool
-	NoRoutes    bool
-	NoDAD       bool
-	NoRewrite   bool
-	Debug       bool
-	CacheTTL    time.Duration
-	CacheMax    int
-	RouteQPS    int
-	PFQPS       int
-	PcapTimeout time.Duration
-	PFTables    map[string][]string // interface -> list of tables
-	CacheFile   string              // path to persistent cache file (optional)
+	NoRA           bool
+	NoRoutes       bool
+	NoDAD          bool
+	NoRewrite      bool
+	Debug          bool
+	CacheTTL       time.Duration
+	CacheMax       int
+	RouteQPS       int
+	PFQPS          int
+	PcapTimeout    time.Duration
+	PFTables       map[string][]string // interface -> list of tables
+	CacheFile      string              // path to persistent cache file (optional)
+	StaticPrefixes []netip.Prefix
+	StaticRouters  []netip.Addr
 }
 
 // ShouldForwardType returns true if the given ICMPv6 type should be forwarded.
@@ -82,6 +119,8 @@ func ParseFlags() *Config {
 
 	cfg := &Config{}
 	var pfTables pfTableFlag
+	var staticPrefixes staticPrefixFlag
+	var staticRouters staticRouterFlag
 
 	flag.BoolVar(&cfg.NoRA, "no-ra", false, "disable forwarding of Router Advertisements (ICMPv6 type 134)")
 	flag.BoolVar(&cfg.NoRoutes, "no-routes", false, "disable per-host route installation and cleanup")
@@ -95,6 +134,8 @@ func ParseFlags() *Config {
 	flag.DurationVar(&cfg.PcapTimeout, "pcap-timeout", defaultPcapTimeout, "packet capture timeout (lower = less latency, higher = less CPU)")
 	flag.Var(&pfTables, "pf", "populate PF table with learned clients (format: interface:table, repeatable)")
 	flag.StringVar(&cfg.CacheFile, "cache-file", "", "path to persistent cache file for state across restarts (SIGUSR1 to save)")
+	flag.Var(&staticPrefixes, "static-prefix", "manually trust an IPv6 prefix for learning/proxying (repeatable)")
+	flag.Var(&staticRouters, "static-router", "manually trust an upstream router link-local address (repeatable)")
 	flag.Parse()
 
 	// Sanitize values
@@ -120,6 +161,9 @@ func ParseFlags() *Config {
 	}
 
 	cfg.PFTables = pfTables.m
+	cfg.StaticPrefixes = []netip.Prefix(staticPrefixes)
+	cfg.StaticRouters = []netip.Addr(staticRouters)
+
 	return cfg
 }
 

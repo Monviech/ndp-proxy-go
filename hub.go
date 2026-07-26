@@ -402,6 +402,19 @@ func (h *Hub) rememberRouterLLA(ip net.IP) {
 	h.Config.DebugLog("router LLA learned: %s", addr)
 }
 
+// AddStaticRouterLLA records a manually trusted upstream router link-local address.
+func (h *Hub) AddStaticRouterLLA(addr netip.Addr) {
+	if !addr.Is6() || !addr.IsLinkLocalUnicast() {
+		return
+	}
+
+	h.muRouter.Lock()
+	h.routerLLA[addr] = struct{}{}
+	h.muRouter.Unlock()
+
+	h.Config.DebugLog("static router LLA added: %s", addr)
+}
+
 // isRouterLLA checks if an IP is a known router link-local address.
 func (h *Hub) isRouterLLA(ip net.IP) bool {
 	if ip == nil {

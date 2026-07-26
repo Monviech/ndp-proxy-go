@@ -61,6 +61,10 @@ Key Features
 - **Dynamic Prefix Learning** – Learns valid prefixes from Router Advertisements and
   expires them automatically. Handles temporary RFC 4941 addresses and changing prefixes
   without loss of connectivity.
+- **Static Prefix Support** – Manually trusted IPv6 prefixes and upstream router
+  link-local addresses can supplement RA-learned state. Static prefixes are only
+  used to permit downstream host learning; the proxy still only responds for
+  individually learned hosts.
 - **Route Management** – Installs and updates per-host /128 routes.
 - **PF Table Management** – Add learned IP addresses to pf tables.
 
@@ -80,6 +84,16 @@ This has some important implications:
 - **Recommended:** Use `--cache-file` to persist the neighbor cache across daemon restarts and system reboots.
   This significantly improves continuity on PPPoE links by restoring learned addresses and routes immediately.
 
+Limitations
+-----------
+
+The proxy does not naturally support NPTv6, as translated addresses never appear on the downstream network and therefore cannot be learned.
+Responding for an entire translated prefix would violate the host-ownership model and risks claiming addresses belonging to legitimate upstream hosts.
+As a result, the proxy is not the right tool for multi-WAN or VPN downstream deployments using ULAs.
+Consider using NAT66 instead, which translates traffic to the router's own global IPv6 address in a similar way to IPv4 NAT.
+
+(Yes, I know: "IPv6 + NAT = bad, uga buga." But ignore the dogma for a moment. Ask yourself why IPv4 NAT exists in the first place.
+If NAT44 solves the exact problem you're facing, then NAT66 is probably ALSO the correct solution.)
 
 Prerequisites
 ------------------
@@ -147,6 +161,8 @@ Flags
 | `--pf-qps <n>` | Max pfctl operations per second | 50 |
 | `--pcap-timeout <dur>` | Packet capture timeout (lower = less latency, higher = less CPU) | 50ms |
 | `--pf=interface:table` | pf table mapping (repeatable), interface optional | none |
+| `--static-prefix <prefix>` | Manually trust an IPv6 prefix for downstream learning (repeatable) | none |
+| `--static-router <address>` | Manually trust an upstream router link-local address (repeatable) | none |
 
 
 Performance Tuning
@@ -173,6 +189,22 @@ Restored neighbors bypass prefix validation since they were validated when first
 If the ISP assigns a new prefix after reboot, stale neighbors simply expire via normal TTL.
 
 The cache file uses atomic writes (write to temp file, then rename) to prevent corruption.
+
+
+Static Prefixes
+------------------
+
+By default, the proxy learns usable prefixes and the upstream router link-local
+address from Router Advertisements.
+
+`--static-prefix` and `--static-router` can supplement this information for
+deployments where it cannot be learned dynamically. Any IPv6 prefix length
+may be configured.
+
+A static prefix is **not** a blanket ownership claim. It only defines which
+non-link-local addresses are eligible to be learned from downstream clients.
+The proxy continues to answer Neighbor Solicitations only for individually
+learned hosts.
 
 
 Code Structure
