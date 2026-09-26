@@ -42,9 +42,9 @@ separate components for RA forwarding, prefix tracking, or route handling.
 proxies DAD/NS/NA, synthesizes local answers, and installs per-host routes.
 The result is a complete L3 solution rather than a partial relay.
 
-``ndp-proxy-go`` is expected to run on a FreeBSD based router and is considered stable
-for small to medium sized home (CPE) and cloud setups. It is not intended for ISP deployments,
-but for the network edge. The flag defaults are optimized for this usecase.
+``ndp-proxy-go`` is primarily developed for FreeBSD routers and is considered stable
+there for small to medium sized home (CPE) and cloud setups. It is not intended for ISP
+deployments, but for the network edge. The flag defaults are optimized for this usecase.
 
 
 Key Features
@@ -84,6 +84,10 @@ This has some important implications:
 - **Recommended:** Use `--cache-file` to persist the neighbor cache across daemon restarts and system reboots.
   This significantly improves continuity on PPPoE links by restoring learned addresses and routes immediately.
 
+Linux support is experimental and currently untested. It supports Ethernet interfaces
+and installs routes with the ``ip`` command from iproute2. PF integration and
+point-to-point uplinks are not implemented; using ``--pf`` is rejected at startup.
+
 Limitations
 -----------
 
@@ -98,17 +102,17 @@ If NAT44 solves the exact problem you're facing, then NAT66 is probably ALSO the
 Prerequisites
 ------------------
 
-- FreeBSD with IPv6 routing enabled (``ipv6_gateway_enable="YES"``)
+- FreeBSD with IPv6 routing enabled (``ipv6_gateway_enable="YES"``), or Linux with IPv6 forwarding enabled
 - Both interfaces must have link-local addresses
 - Upstream interface must accept Router Advertisements (``accept_rtadv``)
 - Upstream router must send RAs
-- Downstream clients must use the FreeBSD router as their default gateway
-
+- Downstream clients must use the proxy host as their default gateway
 
 Installation
 ------------------
 
-Please note that you must have [`lang/go`](https://github.com/freebsd/freebsd-ports/tree/main/lang/go) installed to build.
+Building requires Go and the libpcap development files. On FreeBSD, Go is
+available as [`lang/go`](https://github.com/freebsd/freebsd-ports/tree/main/lang/go).
 
 From Source:
 
@@ -219,8 +223,10 @@ Code Structure
     ├── port.go       – PCAP interface wrapper with BPF filtering
     ├── config.go     – Command-line flags and runtime configuration
     ├── prefix.go     – Track and validate prefixes from Router Advertisements
-    ├── route.go      – Install per-host /128 routes (optional)
-    └── pf.go         - Add learned IPv6 addresses to pf tables (optional)
+    ├── route.go      – Shared per-host /128 route worker
+    ├── route_*.go    – Platform-specific route operations
+    ├── p2p_*.go      – Platform-specific point-to-point support
+    └── pf*.go        - FreeBSD PF support and platform fallback
 
 
 Packet Flow
