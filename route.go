@@ -2,11 +2,11 @@
 // Copyright (c) 2025 Cedrik Pischem
 // SPDX-License-Identifier: BSD-2-Clause
 //
-// route.go - FreeBSD per-host route management with rate limiting
+// route.go - Per-host route management with rate limiting
 //
-// Installs /128 host routes via /sbin/route so the kernel forwards traffic
-// to learned clients. Rate-limited using golang.org/x/time/rate to prevent
-// route table thrashing.
+// Installs /128 host routes using the platform-specific route implementation
+// so the kernel forwards traffic to learned clients. Rate-limited using
+// golang.org/x/time/rate to prevent route table thrashing.
 //
 // Without per-host routes, the kernel doesn't know clients exist on
 // downstream interfaces and won't forward their traffic.
@@ -16,7 +16,7 @@ package main
 
 import (
 	"context"
-	"os/exec"
+	"log"
 	"strings"
 	"time"
 
@@ -43,6 +43,9 @@ func NewRouteWorker(qps int, config *Config) *RouteWorker {
 	if config.NoRoutes {
 		return nil
 	}
+	if err := initializeRoutePlatform(); err != nil {
+		log.Fatalf("route management unavailable: %v (use --no-routes to disable it)", err)
+	}
 
 	r := &RouteWorker{
 		ch:      make(chan routeOp, 4096),
@@ -64,15 +67,11 @@ func NewRouteWorker(qps int, config *Config) *RouteWorker {
 				}
 
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				var cmd *exec.Cmd
 				action := "delete"
 				if op.add {
 					action = "add"
-					cmd = exec.CommandContext(ctx, "/sbin/route", "-6", "add", "-host", op.ip, "-iface", op.iface)
-				} else {
-					cmd = exec.CommandContext(ctx, "/sbin/route", "-6", "delete", "-host", op.ip)
 				}
-				out, err := cmd.CombinedOutput()
+				out, err := executeRouteOperation(ctx, op)
 				cancel()
 
 				if err != nil {
@@ -100,11 +99,11 @@ func (r *RouteWorker) Add(ip, iface string) {
 }
 
 // Delete enqueues a route delete operation.
-func (r *RouteWorker) Delete(ip string) {
+func (r *RouteWorker) Delete(ip, iface string) {
 	if r == nil {
 		return
 	}
-	r.ch <- routeOp{add: false, ip: ip}
+	r.ch <- routeOp{add: false, ip: ip, iface: iface}
 }
 
 // Stop shuts down the route worker.

@@ -1,8 +1,10 @@
+//go:build freebsd
+
 //
 // Copyright (c) 2025 Cedrik Pischem
 // SPDX-License-Identifier: BSD-2-Clause
 //
-// pf.go - PF table management for learned clients
+// pf_freebsd.go - FreeBSD PF table management for learned clients
 //
 // Populates PF tables with IPv6 addresses of learned clients via pfctl.
 // Mappings are configured via flags: --pf=interface:table (interface optional)

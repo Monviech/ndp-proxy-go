@@ -65,7 +65,10 @@ func OpenPort(name string, config *Config) *Port {
 
 	// Detect link type
 	linkType := h.LinkType()
-	isP2P := (linkType == layers.LinkTypeNull || linkType == layers.LinkTypeLoop || linkType == layers.LinkTypeRaw)
+	isP2P, err := detectPointToPointLinkType(linkType)
+	if err != nil {
+		log.Fatalf("interface %s: %v", name, err)
+	}
 	if isP2P {
 		log.Printf("(experimental) detected point-to-point interface on %s (DLT=%d).",
 			name, linkType)
