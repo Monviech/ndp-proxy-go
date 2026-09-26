@@ -29,7 +29,7 @@ func initializeRoutePlatform() error {
 func executeRouteOperation(ctx context.Context, op routeOp) ([]byte, error) {
 	prefix := op.ip + "/128"
 	if op.add {
-		return exec.CommandContext(ctx, ipCommand, "-6", "route", "replace", prefix, "dev", op.iface).CombinedOutput()
+		return exec.CommandContext(ctx, ipCommand, "-6", "route", "add", prefix, "dev", op.iface).CombinedOutput()
 	}
-	return exec.CommandContext(ctx, ipCommand, "-6", "route", "delete", prefix).CombinedOutput()
+	return exec.CommandContext(ctx, ipCommand, "-6", "route", "delete", prefix, "dev", op.iface).CombinedOutput()
 }

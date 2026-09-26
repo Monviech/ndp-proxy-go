@@ -104,7 +104,9 @@ Prerequisites
 
 - FreeBSD with IPv6 routing enabled (``ipv6_gateway_enable="YES"``), or Linux with IPv6 forwarding enabled
 - Both interfaces must have link-local addresses
-- Upstream interface must accept Router Advertisements (``accept_rtadv``)
+- Upstream interface must accept Router Advertisements
+  - FreeBSD: enable ``accept_rtadv``
+  - Linux: configure ``accept_ra`` to permit RA processing while forwarding (typically ``accept_ra=2``)
 - Upstream router must send RAs
 - Downstream clients must use the proxy host as their default gateway
 

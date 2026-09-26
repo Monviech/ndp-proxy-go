@@ -99,11 +99,11 @@ func (r *RouteWorker) Add(ip, iface string) {
 }
 
 // Delete enqueues a route delete operation.
-func (r *RouteWorker) Delete(ip string) {
+func (r *RouteWorker) Delete(ip, iface string) {
 	if r == nil {
 		return
 	}
-	r.ch <- routeOp{add: false, ip: ip}
+	r.ch <- routeOp{add: false, ip: ip, iface: iface}
 }
 
 // Stop shuts down the route worker.

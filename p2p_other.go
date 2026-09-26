@@ -16,12 +16,11 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-// Point-to-point framing is currently implemented only for FreeBSD. Detect
-// likely P2P framing on other platforms so it is rejected instead of being
-// mistaken for Ethernet.
+// Point-to-point framing is currently implemented only for FreeBSD. Accept
+// only Ethernet so unsupported framing is not silently mistaken for it.
 func detectPointToPointLinkType(linkType layers.LinkType) (bool, error) {
-	if linkType == layers.LinkTypeNull || linkType == layers.LinkTypeLoop || linkType == layers.LinkTypeRaw {
-		return false, fmt.Errorf("point-to-point link type %d is supported only on FreeBSD", linkType)
+	if linkType != layers.LinkTypeEthernet {
+		return false, fmt.Errorf("unsupported link type %d on this platform", linkType)
 	}
 	return false, nil
 }

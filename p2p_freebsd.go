@@ -10,6 +10,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 
 	"github.com/google/gopacket"
@@ -17,7 +18,14 @@ import (
 )
 
 func detectPointToPointLinkType(linkType layers.LinkType) (bool, error) {
-	return linkType == layers.LinkTypeNull || linkType == layers.LinkTypeLoop || linkType == layers.LinkTypeRaw, nil
+	switch linkType {
+	case layers.LinkTypeEthernet:
+		return false, nil
+	case layers.LinkTypeNull, layers.LinkTypeLoop, layers.LinkTypeRaw:
+		return true, nil
+	default:
+		return false, fmt.Errorf("unsupported link type %d", linkType)
+	}
 }
 
 // sendRSPointToPoint sends RS on a P2P interface using FreeBSD loopback framing.

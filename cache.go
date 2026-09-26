@@ -112,7 +112,7 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 			if ip.IsLinkLocalUnicast() {
 				return
 			}
-			c.rt.Delete(addr.String())
+			c.rt.Delete(addr.String(), prevIf)
 			c.rt.Add(addr.String(), ifn)
 			c.pf.Delete(addr.String(), prevIf)
 			c.pf.Add(addr.String(), ifn)
@@ -163,7 +163,7 @@ func (c *Cache) Sweep() {
 	for addr, n := range c.m {
 		if now.After(n.Exp) {
 			delete(c.m, addr)
-			c.rt.Delete(addr.String())
+			c.rt.Delete(addr.String(), n.If)
 			c.pf.Delete(addr.String(), n.If)
 		}
 	}
