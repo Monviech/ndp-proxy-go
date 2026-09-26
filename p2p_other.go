@@ -20,11 +20,11 @@ import (
 // only Ethernet so unsupported framing is not silently mistaken for it.
 func detectPointToPointLinkType(linkType layers.LinkType) (bool, error) {
 	if linkType != layers.LinkTypeEthernet {
-		return false, fmt.Errorf("unsupported link type %d on this platform", linkType)
+		return false, fmt.Errorf("link type %d is not supported on this platform", linkType)
 	}
 	return false, nil
 }
 
 func sendRSPointToPoint(*Port) error {
-	return errors.New("point-to-point interfaces are supported only on FreeBSD")
+	return errors.New("point-to-point interfaces are not supported on this platform")
 }

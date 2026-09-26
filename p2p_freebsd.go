@@ -24,7 +24,7 @@ func detectPointToPointLinkType(linkType layers.LinkType) (bool, error) {
 	case layers.LinkTypeNull, layers.LinkTypeLoop, layers.LinkTypeRaw:
 		return true, nil
 	default:
-		return false, fmt.Errorf("unsupported link type %d", linkType)
+		return false, fmt.Errorf("link type %d is not supported on this platform", linkType)
 	}
 }
 

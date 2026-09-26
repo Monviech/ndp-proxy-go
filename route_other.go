@@ -15,9 +15,9 @@ import (
 )
 
 func initializeRoutePlatform() error {
-	return errors.New("route management is not implemented on this platform")
+	return errors.New("route management is not supported on this platform")
 }
 
 func executeRouteOperation(context.Context, routeOp) ([]byte, error) {
-	return nil, errors.New("route management is not implemented on this platform")
+	return nil, errors.New("route management is not supported on this platform")
 }

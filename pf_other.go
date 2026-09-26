@@ -17,7 +17,7 @@ type PFWorker struct{}
 
 func NewPFWorker(_ int, config *Config) *PFWorker {
 	if len(config.PFTables) != 0 {
-		log.Fatal("--pf is supported only on FreeBSD")
+		log.Fatal("--pf is not supported on this platform")
 	}
 	return nil
 }
