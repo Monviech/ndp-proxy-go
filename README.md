@@ -11,8 +11,8 @@ are available for OPNsense.
 The Issue
 ------------------
 
-Modern IPv6 networks can face challenges when using a FreeBSD router between
-an ISP gateway and internal clients.
+Modern IPv6 networks can face challenges when placing a router between an ISP
+gateway and internal clients.
 
 Some ISPs and cloud providers do not offer IPv6 prefix delegation (DHCPv6-PD).
 Without delegated prefixes, you cannot assign unique subnets to downstream
@@ -34,7 +34,7 @@ The Solution
 
 ``ndp-proxy-go`` makes downstream clients seem to reside on the same
 Ethernet segment as the ISP router while maintaining routing and firewall separation
-on the FreeBSD router.
+on the proxy host.
 
 Other NDP proxy tools focus on a single piece, such as relaying NS/NA, and rely on
 separate components for RA forwarding, prefix tracking, or route handling.
