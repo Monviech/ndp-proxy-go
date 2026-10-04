@@ -34,10 +34,45 @@ import (
 
 // Neighbor represents a learned IPv6 neighbor.
 type Neighbor struct {
-	MAC  net.HardwareAddr
-	Port int
-	If   string
-	Exp  time.Time
+	MAC     net.HardwareAddr
+	Port    int
+	If      string
+	Exp     time.Time
+	Claimed bool
+}
+
+// Claim records an address claimed by the prefix responder without installing
+// a downstream route or PF entry.
+func (c *Cache) Claim(ip net.IP, mac net.HardwareAddr) bool {
+	if ip == nil || mac == nil || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	if c.allow != nil && !c.allow.Contains(ip) {
+		return false
+	}
+
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.m[addr]; exists {
+		return true
+	}
+	if c.max > 0 && len(c.m) >= c.max {
+		return false
+	}
+
+	c.m[addr] = Neighbor{
+		MAC:     append(net.HardwareAddr(nil), mac...),
+		Port:    -1,
+		Exp:     time.Now().Add(c.ttl),
+		Claimed: true,
+	}
+	c.config.DebugLog("respond-prefix: claimed %s after upstream DAD", addr)
+	return true
 }
 
 // Cache tracks learned neighbors with expiry and optional route management.
@@ -93,6 +128,16 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 
 	// Existing neighbor: refresh TTL and allow same-MAC roaming to update routes/PF.
 	if old, ok := c.m[addr]; ok && now.Before(old.Exp) {
+		if old.Claimed {
+			// Cache state may only move toward greater knowledge about an address.
+			c.m[addr] = Neighbor{MAC: mac, Port: port, If: ifn, Exp: expire}
+			if !ip.IsLinkLocalUnicast() {
+				c.rt.Add(addr.String(), ifn)
+				c.pf.Add(addr.String(), ifn)
+			}
+			c.config.DebugLog("respond-prefix: promoted claimed address %s to learned host on %s (port %d)", addr, ifn, port)
+			return
+		}
 		// Only allow roaming when the MAC matches the existing entry.
 		if !bytes.Equal(old.MAC, mac) {
 			c.config.DebugLog("cache entry MAC mismatch %s on %s (port %d), ignoring", addr, ifn, port)
@@ -163,8 +208,12 @@ func (c *Cache) Sweep() {
 	for addr, n := range c.m {
 		if now.After(n.Exp) {
 			delete(c.m, addr)
-			c.rt.Delete(addr.String(), n.If)
-			c.pf.Delete(addr.String(), n.If)
+			if n.Claimed {
+				c.config.DebugLog("respond-prefix: claimed address expired %s", addr)
+			} else {
+				c.rt.Delete(addr.String(), n.If)
+				c.pf.Delete(addr.String(), n.If)
+			}
 		}
 	}
 }
@@ -186,6 +235,7 @@ type neighborJSON struct {
 	Port    int       `json:"port"`
 	If      string    `json:"interface"`
 	Expires time.Time `json:"expires"`
+	Claimed bool      `json:"claimed,omitempty"`
 }
 
 // Save writes the neighbor cache to a JSON file.
@@ -212,6 +262,7 @@ func (c *Cache) Save(path string) error {
 			Port:    n.Port,
 			If:      n.If,
 			Expires: n.Exp,
+			Claimed: n.Claimed,
 		})
 	}
 	c.mu.RUnlock()
@@ -272,7 +323,10 @@ func (c *Cache) Load(path string) error {
 		if c.max > 0 && len(c.m) >= c.max {
 			break
 		}
-		c.m[addr] = Neighbor{MAC: mac, Port: n.Port, If: n.If, Exp: n.Expires}
+		c.m[addr] = Neighbor{MAC: mac, Port: n.Port, If: n.If, Exp: n.Expires, Claimed: n.Claimed}
+		if n.Claimed {
+			c.config.DebugLog("respond-prefix: restored claimed address %s (expires in %s)", addr, n.Expires.Sub(now).Round(time.Second))
+		}
 		neighborCount++
 	}
 	c.mu.Unlock()
@@ -280,7 +334,7 @@ func (c *Cache) Load(path string) error {
 	// Install routes and PF entries outside the lock
 	c.mu.RLock()
 	for addr, n := range c.m {
-		if !addr.IsLinkLocalUnicast() {
+		if !addr.IsLinkLocalUnicast() && !n.Claimed {
 			c.rt.Add(addr.String(), n.If)
 			c.pf.Add(addr.String(), n.If)
 		}

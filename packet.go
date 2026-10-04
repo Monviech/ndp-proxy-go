@@ -423,6 +423,44 @@ func BuildNA(egress *Port, srcIP net.IP, dstIP net.IP, dstMAC net.HardwareAddr, 
 	return buf.Bytes()
 }
 
+// SendDADProbe sends one Neighbor Solicitation with an unspecified source.
+func SendDADProbe(port *Port, target net.IP) error {
+	if port == nil || port.IsP2P || port.HW == nil || target == nil || target.To4() != nil || target.To16() == nil {
+		return fmt.Errorf("invalid port or target for DAD probe")
+	}
+
+	target = target.To16()
+	dstIP := net.IP{0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xff, target[13], target[14], target[15]}
+	dstMAC := net.HardwareAddr{0x33, 0x33, 0xff, target[13], target[14], target[15]}
+
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	ip6 := &layers.IPv6{
+		Version:    6,
+		HopLimit:   NdHopLimit,
+		NextHeader: layers.IPProtocolICMPv6,
+		SrcIP:      net.IPv6unspecified,
+		DstIP:      dstIP,
+	}
+	icmp6 := &layers.ICMPv6{
+		TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeNeighborSolicitation, 0),
+	}
+	if err := icmp6.SetNetworkLayerForChecksum(ip6); err != nil {
+		return err
+	}
+	ns := &layers.ICMPv6NeighborSolicitation{TargetAddress: target}
+
+	if err := gopacket.SerializeLayers(buf, opts,
+		&layers.Ethernet{SrcMAC: port.HW, DstMAC: dstMAC, EthernetType: layers.EthernetTypeIPv6},
+		ip6, icmp6, ns,
+	); err != nil {
+		return err
+	}
+
+	port.Write(buf.Bytes(), port.HW, dstMAC)
+	return nil
+}
+
 // SendRouterSolicitation sends a Router Solicitation to trigger an immediate RA.
 func SendRouterSolicitation(port *Port) error {
 	if port == nil || port.LLA == nil {

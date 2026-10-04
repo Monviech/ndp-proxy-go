@@ -48,14 +48,17 @@ func main() {
 	config := ParseFlags()
 	args := flag.Args()
 
-	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: %s [flags] <up_if> <down_if1> [...]\n", os.Args[0])
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "usage: %s [flags] <up_if> [<down_if1> ...]\n", os.Args[0])
 		os.Exit(1)
 	}
 
 	// Open upstream port
 	up := OpenPort(args[0], config)
 	defer up.H.Close()
+	if config.RespondPrefix && up.IsP2P {
+		log.Printf("warning: --respond-prefix is a no-op on point-to-point upstream interface %s", up.Name)
+	}
 
 	// Open downstream ports
 	var downs []*Port
@@ -141,9 +144,9 @@ func main() {
 		}
 	}()
 
-	log.Printf("upstream=%s downstream=%s no-ra=%t no-routes=%t no-dad=%t no-rewrite-lla=%t cache-ttl=%s cache-max=%d route-qps=%d pf-qps=%d pcap-timeout=%s cache-file=%q static-prefixes=%d static-routers=%d",
+	log.Printf("upstream=%s downstream=%s no-ra=%t no-routes=%t no-dad=%t no-rewrite-lla=%t respond-prefix=%t cache-ttl=%s cache-max=%d route-qps=%d pf-qps=%d pcap-timeout=%s cache-file=%q static-prefixes=%d static-routers=%d",
 		up.Name, strings.Join(args[1:], ","),
-		config.NoRA, config.NoRoutes, config.NoDAD, config.NoRewrite,
+		config.NoRA, config.NoRoutes, config.NoDAD, config.NoRewrite, config.RespondPrefix,
 		config.CacheTTL, config.CacheMax, config.RouteQPS, config.PFQPS, config.PcapTimeout,
 		config.CacheFile, len(config.StaticPrefixes), len(config.StaticRouters))
 

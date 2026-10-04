@@ -62,11 +62,24 @@ Key Features
   expires them automatically. Handles temporary RFC 4941 addresses and changing prefixes
   without loss of connectivity.
 - **Static Prefix Support** – Manually trusted IPv6 prefixes and upstream router
-  link-local addresses can supplement RA-learned state. Static prefixes are only
-  used to permit downstream host learning; the proxy still only responds for
-  individually learned hosts.
+  link-local addresses can supplement RA-learned state. Static prefixes permit
+  downstream host learning and can also be used by the prefix responder.
 - **Route Management** – Installs and updates per-host /128 routes.
 - **PF Table Management** – Add learned IP addresses to pf tables.
+
+Prefix Responding
+-----------------
+
+`--respond-prefix` claims an unknown address from any currently valid RA-learned
+or static prefix after a short DAD probe on the upstream interface. Successful
+claims become normal expiring cache entries, but do not install downstream routes.
+This mode can run with only the upstream interface or alongside normal downstream
+proxying. It is useful with NPTv6, where translated addresses appear only on the
+upstream side and cannot be learned from normal downstream traffic. Claims can be
+persisted with `--cache-file` and retain their original expiry. With `--no-dad`,
+the probe is skipped and addresses are claimed immediately; this is intentionally
+unsafe.
+`--respond-prefix` is a no-op on point-to-point upstreams and logs a warning.
 
 Experimental Features
 ---------------------
@@ -78,7 +91,7 @@ This has some important implications:
 - Only Router Solicitations (RS) are forwarded upstream.
 - NS/NA forwarding is intentionally disabled on point-to-point links.
 - The `--cache-ttl` must be increased, since there are fewer NAs containing an address to learn from, otherwise routes might get removed prematurely.
-- Ethernet downstream interfaces are still required. Point-to-point interfaces cannot be used as downstream ports.
+- Any configured downstream interfaces must be Ethernet; point-to-point interfaces cannot be used as downstream ports.
 - After a router restart, IPv6 connectivity may be delayed until downstream clients perform SLAAC and DAD again.
   This is expected behavior on PPPoE, as the upstream (ISP) router never probes addresses.
 - **Recommended:** Use `--cache-file` to persist the neighbor cache across daemon restarts and system reboots.
@@ -88,22 +101,11 @@ Linux support is experimental and currently untested. It supports Ethernet inter
 and installs routes with the ``ip`` command from iproute2. PF integration and
 point-to-point uplinks are not implemented; using ``--pf`` is rejected at startup.
 
-Limitations
------------
-
-The proxy does not naturally support NPTv6, as translated addresses never appear on the downstream network and therefore cannot be learned.
-Responding for an entire translated prefix would violate the host-ownership model and risks claiming addresses belonging to legitimate upstream hosts.
-As a result, the proxy is not the right tool for multi-WAN or VPN downstream deployments using ULAs.
-Consider using NAT66 instead, which translates traffic to the router's own global IPv6 address in a similar way to IPv4 NAT.
-
-(Yes, I know: "IPv6 + NAT = bad, uga buga." But ignore the dogma for a moment. Ask yourself why IPv4 NAT exists in the first place.
-If NAT44 solves the exact problem you're facing, then NAT66 is probably ALSO the correct solution.)
-
 Prerequisites
 ------------------
 
 - FreeBSD with IPv6 routing enabled (``ipv6_gateway_enable="YES"``), or Linux with IPv6 forwarding enabled
-- Both interfaces must have link-local addresses
+- All configured interfaces must have link-local addresses
 - Upstream interface must accept Router Advertisements
   - FreeBSD: enable ``accept_rtadv``
   - Linux: configure ``accept_ra`` to permit RA processing while forwarding (typically ``accept_ra=2``)
@@ -127,7 +129,7 @@ Command-Line Usage
 ------------------
 
 
-    ndp-proxy-go [flags] <up_if> <down_if1> [<down_if2> ...]
+    ndp-proxy-go [flags] <up_if> [<down_if1> ...]
 
 
 Examples
@@ -142,6 +144,9 @@ Examples
 
     # Multiple downstream interfaces
     sudo ndp-proxy-go eth0 eth1 eth2 eth3
+
+    # Claim unused addresses from learned or static prefixes (WAN-only is valid)
+    sudo ndp-proxy-go --respond-prefix --static-prefix 2001:db8:1::/64 eth0
 
     # Custom cache settings
     sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 --cache-file /var/db/ndpproxy/cache.json eth0 eth1
@@ -160,6 +165,7 @@ Flags
 | `--no-ra` | Disable Router Advertisement forwarding | disabled |
 | `--no-routes` | Disable automatic per-host route installation | disabled |
 | `--no-dad` | Disable DAD proxying (RFC 4389 non-compliant, may cause conflicts) | disabled |
+| `--respond-prefix` | Claim unknown addresses in trusted prefixes after a WAN-side DAD check | disabled |
 | `--cache-ttl <dur>` | Neighbor cache lifetime | 10m |
 | `--cache-max <n>` | Maximum learned neighbors | 4096 |
 | `--cache-file <path>` | Persist cache to JSON file; load on startup, save on SIGUSR1 | none |
@@ -192,6 +198,8 @@ be relearned quickly enough after a proxy restart or full system reboot.
 
 Prefixes are saved for diagnostics but not restored on load — they are always learned fresh from Router Advertisements.
 Restored neighbors bypass prefix validation since they were validated when first learned.
+Responder-claimed neighbors retain their original expiry and are restored without
+installing downstream route or PF entries.
 If the ISP assigns a new prefix after reboot, stale neighbors simply expire via normal TTL.
 
 The cache file uses atomic writes (write to temp file, then rename) to prevent corruption.
@@ -207,10 +215,11 @@ address from Router Advertisements.
 deployments where it cannot be learned dynamically. Any IPv6 prefix length
 may be configured.
 
-A static prefix is **not** a blanket ownership claim. It only defines which
-non-link-local addresses are eligible to be learned from downstream clients.
-The proxy continues to answer Neighbor Solicitations only for individually
-learned hosts.
+By default, a static prefix is **not** a blanket ownership claim. It only defines
+which non-link-local addresses are eligible to be learned from downstream clients.
+With `--respond-prefix`, it also makes unknown addresses eligible for the WAN-side
+DAD-and-claim fallback; the proxy still stores successful claims as individual
+host cache entries.
 
 
 Code Structure
