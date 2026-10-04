@@ -44,6 +44,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"sync"
@@ -52,6 +53,15 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
+
+const prefixDADWait = 1 * time.Second
+
+type prefixClaim struct {
+	target net.IP
+	dstIP  net.IP
+	dstMAC net.HardwareAddr
+	timer  *time.Timer
+}
 
 // DedupCache provides a short-lived deduplication window for forwarded packets.
 type DedupCache struct {
@@ -99,6 +109,8 @@ type Hub struct {
 	muRouter  sync.RWMutex
 	routerLLA map[netip.Addr]struct{} // Learned from RA source addresses
 	prefixDB  *PrefixDB
+	muClaims  sync.Mutex
+	claims    map[netip.Addr]*prefixClaim
 
 	wg sync.WaitGroup
 }
@@ -113,6 +125,7 @@ func NewHub(up *Port, down []*Port, cache *Cache, prefixDB *PrefixDB, config *Co
 		Config:    config,
 		routerLLA: make(map[netip.Addr]struct{}),
 		prefixDB:  prefixDB,
+		claims:    make(map[netip.Addr]*prefixClaim),
 	}
 }
 
@@ -267,6 +280,7 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			h.cancelPrefixClaims()
 			return
 		case pkt, ok := <-ps.Packets():
 			if !ok {
@@ -298,16 +312,29 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 			}
 
 			// Proxy client global NA locally on uplink
+			if ndPkt.Type() == layers.ICMPv6TypeNeighborAdvertisement {
+				if h.prefixClaimConflict(ndPkt.Target()) {
+					continue
+				}
+			}
+
 			if ndPkt.Type() == layers.ICMPv6TypeNeighborSolicitation {
 				tgt := ndPkt.Target()
+				if ndPkt.IsDAD() && h.Config.NoDAD {
+					h.Config.DebugLog("dropping DAD NS from upstream (target %s) - no-dad enabled", tgt)
+					continue
+				}
+				if ndPkt.IsDAD() && h.prefixClaimConflict(tgt) {
+					continue
+				}
 
 				// DAD NS from upstream: check if target conflicts with downstream clients
-				if ndPkt.IsDAD() && !h.Config.NoDAD {
+				if ndPkt.IsDAD() {
 					if tgt != nil {
 						// Check if any downstream client owns this address
 						// Skip link-locals: upstream and downstream LLAs are on different segments
 						if !tgt.IsLinkLocalUnicast() {
-							if n, ok := h.Cache.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(h.Down) {
+							if n, ok := h.Cache.Lookup(tgt); ok && (n.Claimed || n.Port >= 0 && n.Port < len(h.Down)) {
 								// Respond immediately to protect downstream client
 								allNodes := net.ParseIP("ff02::1")
 								allNodesMAC := net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0x01}
@@ -325,12 +352,16 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 
 				// Regular NS: proxy client address locally if we know where it is
 				if !ndPkt.IsDAD() && tgt != nil && !tgt.IsLinkLocalUnicast() && ndPkt.eth != nil {
-					if n, ok := h.Cache.Lookup(tgt); ok && n.Port >= 0 && n.Port < len(h.Down) {
-						if na := BuildNA(h.Up, tgt, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, false); na != nil {
-							h.Up.Write(na, h.Up.HW, ndPkt.eth.SrcMAC)
-							h.Config.DebugLog("proxied NA (client %s) -> %s on %s", tgt, ndPkt.ipv6.SrcIP, h.Up.Name)
-							continue
+					if n, ok := h.Cache.Lookup(tgt); ok {
+						if n.Claimed || n.Port >= 0 && n.Port < len(h.Down) {
+							if na := BuildNA(h.Up, tgt, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, tgt, false); na != nil {
+								h.Up.Write(na, h.Up.HW, ndPkt.eth.SrcMAC)
+								h.Config.DebugLog("proxied NA (client %s) -> %s on %s", tgt, ndPkt.ipv6.SrcIP, h.Up.Name)
+								continue
+							}
 						}
+					} else if h.startPrefixClaim(tgt, ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC) {
+						continue
 					}
 				}
 			}
@@ -384,6 +415,103 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 				}
 			}
 		}
+	}
+}
+
+func (h *Hub) startPrefixClaim(target, dstIP net.IP, dstMAC net.HardwareAddr) bool {
+	if !h.Config.RespondPrefix || !h.prefixDB.Contains(target) || h.Up.IsP2P {
+		return false
+	}
+	if h.Config.NoDAD {
+		if !h.Cache.Claim(target, h.Up.HW) {
+			log.Printf("respond-prefix: failed to cache claimed address %s", target)
+			return true
+		}
+		if na := BuildNA(h.Up, target, dstIP, dstMAC, target, false); na != nil {
+			h.Up.Write(na, h.Up.HW, dstMAC)
+		}
+		h.Config.DebugLog("respond-prefix: claimed %s without DAD and answered solicitation", target)
+		return true
+	}
+	addr, ok := netip.AddrFromSlice(target)
+	if !ok {
+		return false
+	}
+	h.muClaims.Lock()
+	if h.claims[addr] != nil {
+		h.muClaims.Unlock()
+		h.Config.DebugLog("respond-prefix: probe already pending for %s", target)
+		return true
+	}
+	pending := &prefixClaim{
+		target: append(net.IP(nil), target...),
+		dstIP:  append(net.IP(nil), dstIP...),
+		dstMAC: append(net.HardwareAddr(nil), dstMAC...),
+	}
+	h.claims[addr] = pending
+	pending.timer = time.AfterFunc(prefixDADWait, func() { h.finishPrefixClaim(addr, pending) })
+	h.muClaims.Unlock()
+
+	if err := SendDADProbe(h.Up, target); err != nil {
+		h.muClaims.Lock()
+		if h.claims[addr] == pending {
+			delete(h.claims, addr)
+			pending.timer.Stop()
+		}
+		h.muClaims.Unlock()
+		log.Printf("respond-prefix: DAD probe for %s failed: %v", target, err)
+		return true
+	}
+	h.Config.DebugLog("respond-prefix: probing %s on %s", target, h.Up.Name)
+	return true
+}
+
+func (h *Hub) finishPrefixClaim(addr netip.Addr, pending *prefixClaim) {
+	h.muClaims.Lock()
+	if h.claims[addr] != pending {
+		h.muClaims.Unlock()
+		return
+	}
+	delete(h.claims, addr)
+	h.muClaims.Unlock()
+
+	if _, ok := h.Cache.Lookup(pending.target); !ok {
+		if !h.Cache.Claim(pending.target, h.Up.HW) {
+			log.Printf("respond-prefix: failed to cache claimed address %s", pending.target)
+			return
+		}
+	}
+	if na := BuildNA(h.Up, pending.target, pending.dstIP, pending.dstMAC, pending.target, false); na != nil {
+		h.Up.Write(na, h.Up.HW, pending.dstMAC)
+	}
+	h.Config.DebugLog("respond-prefix: claimed %s and answered solicitation", pending.target)
+}
+
+func (h *Hub) prefixClaimConflict(target net.IP) bool {
+	addr, ok := netip.AddrFromSlice(target)
+	if !ok {
+		return false
+	}
+	h.muClaims.Lock()
+	pending := h.claims[addr]
+	if pending != nil {
+		delete(h.claims, addr)
+		pending.timer.Stop()
+	}
+	h.muClaims.Unlock()
+	if pending != nil {
+		log.Printf("respond-prefix: %s is already in use on %s", target, h.Up.Name)
+		return true
+	}
+	return false
+}
+
+func (h *Hub) cancelPrefixClaims() {
+	h.muClaims.Lock()
+	defer h.muClaims.Unlock()
+	for addr, pending := range h.claims {
+		pending.timer.Stop()
+		delete(h.claims, addr)
 	}
 }
 

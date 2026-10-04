@@ -93,6 +93,7 @@ type Config struct {
 	NoRoutes       bool
 	NoDAD          bool
 	NoRewrite      bool
+	RespondPrefix  bool
 	Debug          bool
 	CacheTTL       time.Duration
 	CacheMax       int
@@ -126,6 +127,7 @@ func ParseFlags() *Config {
 	flag.BoolVar(&cfg.NoRoutes, "no-routes", false, "disable per-host route installation and cleanup")
 	flag.BoolVar(&cfg.NoDAD, "no-dad", false, "disable DAD proxying (RFC 4389 non-compliant, may cause conflicts)")
 	flag.BoolVar(&cfg.NoRewrite, "no-rewrite-lla", false, "do not rewrite SLLA/TLLA options (unsafe in L2-isolated setups)")
+	flag.BoolVar(&cfg.RespondPrefix, "respond-prefix", false, "claim unknown addresses in trusted prefixes after upstream DAD")
 	flag.BoolVar(&cfg.Debug, "debug", false, "enable verbose debug logging")
 	flag.DurationVar(&cfg.CacheTTL, "cache-ttl", defaultCacheTTL, "neighbor cache TTL")
 	flag.IntVar(&cfg.CacheMax, "cache-max", defaultCacheMax, "max neighbors to track")
