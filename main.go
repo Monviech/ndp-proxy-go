@@ -57,7 +57,7 @@ func main() {
 	up := OpenPort(args[0], config)
 	defer up.H.Close()
 	if config.RespondPrefix && up.IsP2P {
-		log.Fatalf("fatal: --respond-prefix requires an Ethernet upstream interface; %s is point-to-point", up.Name)
+		log.Printf("warning: --respond-prefix is a no-op on point-to-point upstream interface %s", up.Name)
 	}
 
 	// Open downstream ports

@@ -79,7 +79,7 @@ upstream side and cannot be learned from normal downstream traffic. Claims can b
 persisted with `--cache-file` and retain their original expiry. With `--no-dad`,
 the probe is skipped and addresses are claimed immediately; this is intentionally
 unsafe.
-`--respond-prefix` requires an Ethernet upstream and is rejected on point-to-point links.
+`--respond-prefix` is a no-op on point-to-point upstreams and logs a warning.
 
 Experimental Features
 ---------------------
