@@ -54,6 +54,7 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
+// Keep this hardcoded for now, can always be changed later.
 const prefixDADWait = 1 * time.Second
 
 type prefixClaim struct {
