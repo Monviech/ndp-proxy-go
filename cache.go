@@ -71,7 +71,7 @@ func (c *Cache) Claim(ip net.IP, mac net.HardwareAddr) bool {
 		Exp:     time.Now().Add(c.ttl),
 		Claimed: true,
 	}
-	c.config.DebugLog("claimed %s after upstream DAD", addr)
+	c.config.DebugLog("respond-prefix: claimed %s after upstream DAD", addr)
 	return true
 }
 
@@ -129,12 +129,13 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 	// Existing neighbor: refresh TTL and allow same-MAC roaming to update routes/PF.
 	if old, ok := c.m[addr]; ok && now.Before(old.Exp) {
 		if old.Claimed {
+			// Cache state may only move toward greater knowledge about an address.
 			c.m[addr] = Neighbor{MAC: mac, Port: port, If: ifn, Exp: expire}
 			if !ip.IsLinkLocalUnicast() {
 				c.rt.Add(addr.String(), ifn)
 				c.pf.Add(addr.String(), ifn)
 			}
-			c.config.DebugLog("promoted claimed cache entry %s to %s (port %d)", addr, ifn, port)
+			c.config.DebugLog("respond-prefix: promoted claimed address %s to learned host on %s (port %d)", addr, ifn, port)
 			return
 		}
 		// Only allow roaming when the MAC matches the existing entry.
@@ -208,7 +209,7 @@ func (c *Cache) Sweep() {
 		if now.After(n.Exp) {
 			delete(c.m, addr)
 			if n.Claimed {
-				c.config.DebugLog("claimed cache entry expired %s", addr)
+				c.config.DebugLog("respond-prefix: claimed address expired %s", addr)
 			} else {
 				c.rt.Delete(addr.String(), n.If)
 				c.pf.Delete(addr.String(), n.If)
@@ -324,7 +325,7 @@ func (c *Cache) Load(path string) error {
 		}
 		c.m[addr] = Neighbor{MAC: mac, Port: n.Port, If: n.If, Exp: n.Expires, Claimed: n.Claimed}
 		if n.Claimed {
-			c.config.DebugLog("restored claimed host %s (expires in %s)", addr, n.Expires.Sub(now).Round(time.Second))
+			c.config.DebugLog("respond-prefix: restored claimed address %s (expires in %s)", addr, n.Expires.Sub(now).Round(time.Second))
 		}
 		neighborCount++
 	}
