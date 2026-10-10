@@ -368,7 +368,7 @@ func BuildNA(egress *Port, srcIP net.IP, dstIP net.IP, dstMAC net.HardwareAddr, 
 	}
 
 	// Build NA flags
-	var flags uint8 = 0x20 // Override
+	var flags uint8 // Keep Override clear so an actual address owner can take precedence.
 	if !dstIP.IsMulticast() {
 		flags |= 0x40 // Solicited must be zero for multicast advertisements
 	}
