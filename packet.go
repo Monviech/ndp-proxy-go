@@ -361,14 +361,17 @@ func rewriteOptions(opts layers.ICMPv6Options, newMAC net.HardwareAddr, optType 
 	return result
 }
 
-// BuildNA constructs a unicast Neighbor Advertisement using gopacket layers.
+// BuildNA constructs a Neighbor Advertisement using gopacket layers.
 func BuildNA(egress *Port, srcIP net.IP, dstIP net.IP, dstMAC net.HardwareAddr, target net.IP, setRouter bool) []byte {
 	if egress == nil || egress.HW == nil || srcIP == nil || dstIP == nil || dstMAC == nil || target == nil {
 		return nil
 	}
 
 	// Build NA flags
-	var flags uint8 = 0x60 // Solicited + Override
+	var flags uint8 = 0x20 // Override
+	if !dstIP.IsMulticast() {
+		flags |= 0x40 // Solicited must be zero for multicast advertisements
+	}
 	if setRouter {
 		flags |= 0x80 // Router flag
 	}
