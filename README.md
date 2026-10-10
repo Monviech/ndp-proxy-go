@@ -57,7 +57,9 @@ Key Features
 - **DAD Proxying** – Forwards DAD probes between interfaces and responds immediately
   when address conflicts are detected in cache.
 - **RA Proxying** – Forwards Router Solicitations and unicast/multicast Router Advertisements
-  to enable SLAAC autoconfiguration of clients.
+  to enable SLAAC autoconfiguration of clients. Forwarded RAs carry the RFC 4389 Proxy (P)
+  flag. An incoming P flag is logged in debug mode but does not alter forwarding, allowing
+  proxies to be chained while per-host learning directs traffic.
 - **Dynamic Prefix Learning** – Learns valid prefixes from Router Advertisements and
   expires them automatically. Handles temporary RFC 4941 addresses and changing prefixes
   without loss of connectivity.
@@ -66,20 +68,6 @@ Key Features
   downstream host learning and can also be used by the prefix responder.
 - **Route Management** – Installs and updates per-host /128 routes.
 - **PF Table Management** – Add learned IP addresses to pf tables.
-
-Prefix Responding
------------------
-
-`--respond-prefix` claims an unknown address from any currently valid RA-learned
-or static prefix after a short DAD probe on the upstream interface. Successful
-claims become normal expiring cache entries, but do not install downstream routes.
-This mode can run with only the upstream interface or alongside normal downstream
-proxying. It is useful with NPTv6, where translated addresses appear only on the
-upstream side and cannot be learned from normal downstream traffic. Claims can be
-persisted with `--cache-file` and retain their original expiry. With `--no-dad`,
-the probe is skipped and addresses are claimed immediately; this is intentionally
-unsafe.
-`--respond-prefix` is a no-op on point-to-point upstreams and logs a warning.
 
 Experimental Features
 ---------------------
@@ -204,6 +192,19 @@ If the ISP assigns a new prefix after reboot, stale neighbors simply expire via 
 
 The cache file uses atomic writes (write to temp file, then rename) to prevent corruption.
 
+Prefix Responding
+-----------------
+
+`--respond-prefix` claims an unknown address from any currently valid RA-learned
+or static prefix after a short DAD probe on the upstream interface. Successful
+claims become normal expiring cache entries, but do not install downstream routes.
+This mode can run with only the upstream interface or alongside normal downstream
+proxying. It is useful with NPTv6, where translated addresses appear only on the
+upstream side and cannot be learned from normal downstream traffic. Claims can be
+persisted with `--cache-file` and retain their original expiry. With `--no-dad`,
+the probe is skipped and addresses are claimed immediately; this is intentionally
+unsafe.
+`--respond-prefix` is a no-op on point-to-point upstreams and logs a warning.
 
 Static Prefixes
 ------------------

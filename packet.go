@@ -26,9 +26,10 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-// Constants for RFC 4861 compliance
+// Constants for Neighbor Discovery compliance.
 const (
-	NdHopLimit = 255 // RFC 4861 requirement: Hop Limit must be 255 for ND messages
+	NdHopLimit  = 255  // RFC 4861 requirement: Hop Limit must be 255 for ND messages
+	RAProxyFlag = 0x04 // RFC 4389 Proxy (P) flag in Router Advertisements
 )
 
 // NDPacket wraps a parsed ND/RA packet with helper methods.
@@ -139,6 +140,18 @@ func (p *NDPacket) IsMulticast() bool {
 	return isMulticastEther(p.eth) || p.ipv6.DstIP.IsMulticast()
 }
 
+// HasRAProxyFlag reports whether an RA was already forwarded by an ND proxy.
+func (p *NDPacket) HasRAProxyFlag() bool {
+	if p.Type() != layers.ICMPv6TypeRouterAdvertisement {
+		return false
+	}
+	raLayer := p.getLayer(layers.LayerTypeICMPv6RouterAdvertisement)
+	if raLayer == nil {
+		return false
+	}
+	return raLayer.(*layers.ICMPv6RouterAdvertisement).Flags&RAProxyFlag != 0
+}
+
 // RAPrefix represents a prefix learned from RA.
 type RAPrefix struct {
 	Net   *net.IPNet
@@ -188,14 +201,14 @@ func (p *NDPacket) ParseRAPrefixes() []RAPrefix {
 	return result
 }
 
-// Sanitize normalizes the packet: HLIM=255, optionally rewrite LLA options and RA source.
+// Sanitize normalizes the packet, marks proxied RAs, and optionally rewrites LLA options and RA source.
 func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
-	if !rewriteOpts {
+	if !rewriteOpts && p.Type() != layers.ICMPv6TypeRouterAdvertisement {
 		// No rewriting needed, just return a copy
 		return append([]byte(nil), p.raw...)
 	}
 
-	// Rebuild the packet with rewritten options
+	// Rebuild the packet with rewritten options and/or the RA Proxy flag.
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{
 		FixLengths:       true,
@@ -204,7 +217,7 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 
 	// Determine source IP: for RAs, use proxy's link-local to present as explicit router
 	srcIP := p.ipv6.SrcIP
-	if p.Type() == layers.ICMPv6TypeRouterAdvertisement && egress.LLA != nil {
+	if rewriteOpts && p.Type() == layers.ICMPv6TypeRouterAdvertisement && egress.LLA != nil {
 		srcIP = egress.LLA
 	}
 
@@ -235,22 +248,25 @@ func (p *NDPacket) Sanitize(egress *Port, rewriteOpts bool) []byte {
 	case layers.ICMPv6TypeRouterAdvertisement:
 		if raLayer := p.getLayer(layers.LayerTypeICMPv6RouterAdvertisement); raLayer != nil {
 			ra := raLayer.(*layers.ICMPv6RouterAdvertisement)
-			// Rewrite source link-layer address option if it exists
-			ra.Options = rewriteOptions(ra.Options, egress.HW, layers.ICMPv6OptSourceAddress)
-			// Add SLLA option if missing (e.g. when converting P2P RAs to Ethernet)
-			// Saves an extra NS/NA round trip on downstream links
-			hasSourceAddr := false
-			for _, opt := range ra.Options {
-				if opt.Type == layers.ICMPv6OptSourceAddress {
-					hasSourceAddr = true
-					break
+			ra.Flags |= RAProxyFlag
+			if rewriteOpts {
+				// Rewrite source link-layer address option if it exists
+				ra.Options = rewriteOptions(ra.Options, egress.HW, layers.ICMPv6OptSourceAddress)
+				// Add SLLA option if missing (e.g. when converting P2P RAs to Ethernet)
+				// Saves an extra NS/NA round trip on downstream links
+				hasSourceAddr := false
+				for _, opt := range ra.Options {
+					if opt.Type == layers.ICMPv6OptSourceAddress {
+						hasSourceAddr = true
+						break
+					}
 				}
-			}
-			if !hasSourceAddr && len(egress.HW) >= 6 {
-				ra.Options = append(ra.Options, layers.ICMPv6Option{
-					Type: layers.ICMPv6OptSourceAddress,
-					Data: egress.HW[0:6],
-				})
+				if !hasSourceAddr && len(egress.HW) >= 6 {
+					ra.Options = append(ra.Options, layers.ICMPv6Option{
+						Type: layers.ICMPv6OptSourceAddress,
+						Data: egress.HW[0:6],
+					})
+				}
 			}
 			ndLayer = ra
 		}

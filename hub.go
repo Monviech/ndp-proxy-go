@@ -178,6 +178,9 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 			if h.Dedup.Seen(key) {
 				continue
 			}
+			if ndPkt.HasRAProxyFlag() {
+				h.Config.DebugLog("received RA with Proxy (P) flag from %s on %s", ndPkt.ipv6.SrcIP, src.Name)
+			}
 
 			// Learn source (skip DAD probes - they have :: source)
 			if !ndPkt.IsDAD() && ndPkt.eth != nil {
@@ -301,6 +304,9 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 
 			// RA: learn router LLA and prefixes (always, regardless of forwarding)
 			if ndPkt.Type() == layers.ICMPv6TypeRouterAdvertisement {
+				if ndPkt.HasRAProxyFlag() {
+					h.Config.DebugLog("received RA with Proxy (P) flag from %s on %s", ndPkt.ipv6.SrcIP, h.Up.Name)
+				}
 				h.rememberRouterLLA(ndPkt.ipv6.SrcIP)
 				for _, pi := range ndPkt.ParseRAPrefixes() {
 					h.prefixDB.Add(pi.Net, pi.Valid)
