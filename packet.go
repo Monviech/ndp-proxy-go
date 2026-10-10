@@ -76,6 +76,12 @@ func ParseNDPacket(pkt gopacket.Packet) *NDPacket {
 		return nil
 	}
 
+	// RFC 4861 requires RAs to use code 0 and a link-local source address.
+	if icmp.TypeCode.Type() == layers.ICMPv6TypeRouterAdvertisement &&
+		(icmp.TypeCode.Code() != 0 || !ip6.SrcIP.IsLinkLocalUnicast()) {
+		return nil
+	}
+
 	// For Ethernet-framed packets: apply L2 checks
 	if eth != nil {
 		// Never leak unicast link-local across links, except allow Router
