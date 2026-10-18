@@ -124,25 +124,28 @@ Examples
 ------------------
 
 
-    # Basic usage (eth0 = WAN, eth1 = LAN)
+    # Proxy one LAN using an RA-learned prefix and router (eth0 = WAN)
     sudo ndp-proxy-go eth0 eth1
 
-    # With debug logging
-    sudo ndp-proxy-go --debug eth0 eth1
-
-    # Multiple downstream interfaces
+    # Proxy multiple LANs using an RA-learned prefix and router
     sudo ndp-proxy-go eth0 eth1 eth2 eth3
+
+    # Proxy one LAN using only the configured prefix and router
+    sudo ndp-proxy-go --static-prefix 2001:db8:1::/64 --static-router fe80::1 eth0 eth1
 
     # Claim unused addresses from RA-learned prefixes (WAN-only is valid)
     sudo ndp-proxy-go --respond-prefix eth0
 
-    # Or claim only from an authoritative static prefix (no static router required)
+    # Claim unused addresses from an authoritative static prefix (no static router required)
     sudo ndp-proxy-go --respond-prefix --static-prefix 2001:db8:1::/64 eth0
 
-    # Custom cache settings
+    # Proxy multiple LANs and claim unused addresses from RA-learned prefixes (mixed Proxy + Claim mode)
+    sudo ndp-proxy-go --respond-prefix eth0 eth1 eth2 eth3
+
+    # Tune and persist the neighbor cache
     sudo ndp-proxy-go --cache-ttl 20m --cache-max 2048 --cache-file /var/db/ndpproxy/cache.json eth0 eth1
 
-    # Add all learned IP addresses to pf table, first flag adds all IP addresses, others are interface specific
+    # Populate PF tables globally and per LAN
     sudo ndp-proxy-go --pf=:table0 --pf=eth1:table1 --pf=eth2:table2 eth0 eth1 eth2
 
 
