@@ -302,18 +302,22 @@ func (h *Hub) forwardUpToDown(ctx context.Context) {
 				continue
 			}
 
-			// RA: learn router LLA and prefixes (always, regardless of forwarding)
+			// RA: learn router LLA and prefixes unless statically configured
 			if ndPkt.Type() == layers.ICMPv6TypeRouterAdvertisement {
 				if ndPkt.HasRAProxyFlag() {
 					h.Config.DebugLog("received RA with Proxy (P) flag from %s on %s", ndPkt.ipv6.SrcIP, h.Up.Name)
 				}
-				h.rememberRouterLLA(ndPkt.ipv6.SrcIP)
-				for _, pi := range ndPkt.ParseRAPrefixes() {
-					h.prefixDB.Add(pi.Net, pi.Valid)
+				if len(h.Config.StaticRouters) == 0 {
+					h.rememberRouterLLA(ndPkt.ipv6.SrcIP)
+				}
+				if len(h.Config.StaticPrefixes) == 0 {
+					for _, pi := range ndPkt.ParseRAPrefixes() {
+						h.prefixDB.Add(pi.Net, pi.Valid)
+					}
 				}
 			}
 
-			// Check if we should forward this type (may skip forwarding but we already learned)
+			// Check if we should forward this type
 			if !h.Config.ShouldForwardType(ndPkt.Type()) {
 				continue
 			}

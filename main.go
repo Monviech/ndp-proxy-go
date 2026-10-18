@@ -21,8 +21,8 @@
 // before external IPv6 connectivity is restored.
 //
 // The default setup is fully dynamic, yet statically set prefixes and routers
-// can supplement RA-learned state. They are intended only for on-link GUA deployments
-// where the upstream router does not advertise usable prefix information.
+// replace corresponding RA-learned state. They are intended only for on-link GUA
+// deployments where the upstream router does not advertise usable prefix information.
 //
 
 package main

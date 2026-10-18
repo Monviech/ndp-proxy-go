@@ -64,8 +64,8 @@ Key Features
   expires them automatically. Handles temporary RFC 4941 addresses and changing prefixes
   without loss of connectivity.
 - **Static Prefix Support** – Manually trusted IPv6 prefixes and upstream router
-  link-local addresses can supplement RA-learned state. Static prefixes permit
-  downstream host learning and can also be used by the prefix responder.
+  link-local addresses replace corresponding RA-learned state. Static
+  prefixes permit downstream host learning and can also be used by the prefix responder.
 - **Route Management** – Installs and updates per-host /128 routes.
 - **PF Table Management** – Add learned IP addresses to pf tables.
 
@@ -133,7 +133,10 @@ Examples
     # Multiple downstream interfaces
     sudo ndp-proxy-go eth0 eth1 eth2 eth3
 
-    # Claim unused addresses from learned or static prefixes (WAN-only is valid)
+    # Claim unused addresses from RA-learned prefixes (WAN-only is valid)
+    sudo ndp-proxy-go --respond-prefix eth0
+
+    # Or claim only from an authoritative static prefix (no static router required)
     sudo ndp-proxy-go --respond-prefix --static-prefix 2001:db8:1::/64 eth0
 
     # Custom cache settings
@@ -212,9 +215,9 @@ Static Prefixes
 By default, the proxy learns usable prefixes and the upstream router link-local
 address from Router Advertisements.
 
-`--static-prefix` and `--static-router` can supplement this information for
-deployments where it cannot be learned dynamically. Any IPv6 prefix length
-may be configured.
+When configured, `--static-prefix` disables RA prefix learning and
+`--static-router` disables RA router learning. Any IPv6 prefix length may be
+configured.
 
 By default, a static prefix is **not** a blanket ownership claim. It only defines
 which non-link-local addresses are eligible to be learned from downstream clients.
