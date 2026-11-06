@@ -252,6 +252,8 @@ Packet Flow
 
 ## Downstream → Upstream (Client to ISP Router)
 
+Router Advertisements received from downstream are dropped before learning or forwarding.
+
 1. Client sends RS/NS/NA toward upstream router.
 2. ``ndp-proxy-go`` learns the client's IPv6 and MAC address from NS/NA/DAD,
    for non-link-local addresses within RA-learned prefixes, and any link-local address

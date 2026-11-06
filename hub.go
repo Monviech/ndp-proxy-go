@@ -173,15 +173,16 @@ func (h *Hub) forwardDownToUp(ctx context.Context, src *Port, idx int) {
 				continue
 			}
 
+			// Router Advertisements are only accepted from upstream.
+			if ndPkt.Type() == layers.ICMPv6TypeRouterAdvertisement {
+				continue
+			}
+
 			// Check deduplication
 			key := fmt.Sprintf("d2u:%s>%s:%d", ndPkt.ipv6.SrcIP, ndPkt.ipv6.DstIP, ndPkt.Type())
 			if h.Dedup.Seen(key) {
 				continue
 			}
-			if ndPkt.HasRAProxyFlag() {
-				h.Config.DebugLog("received RA with Proxy (P) flag from %s on %s", ndPkt.ipv6.SrcIP, src.Name)
-			}
-
 			// Learn source (skip DAD probes - they have :: source)
 			if !ndPkt.IsDAD() && ndPkt.eth != nil {
 				h.Cache.Learn(ndPkt.ipv6.SrcIP, ndPkt.eth.SrcMAC, idx, src.Name)
