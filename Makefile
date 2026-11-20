@@ -1,4 +1,4 @@
-VERSION=	v1.1.1
+VERSION=	v1.1.2
 
 PROG=		ndp-proxy-go
 BINDIR=		/usr/local/sbin
