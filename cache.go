@@ -127,7 +127,8 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 	defer c.mu.Unlock()
 
 	// Existing neighbor: refresh TTL and allow same-MAC roaming to update routes/PF.
-	if old, ok := c.m[addr]; ok && now.Before(old.Exp) {
+	old, exists := c.m[addr]
+	if exists && now.Before(old.Exp) {
 		if old.Claimed {
 			// Cache state may only move toward greater knowledge about an address.
 			c.m[addr] = Neighbor{MAC: mac, Port: port, If: ifn, Exp: expire}
@@ -170,9 +171,15 @@ func (c *Cache) Learn(ip net.IP, mac net.HardwareAddr, port int, ifn string) {
 	}
 
 	// Enforce max neighbor cap
-	if c.max > 0 && len(c.m) >= c.max {
+	if !exists && c.max > 0 && len(c.m) >= c.max {
 		c.config.DebugLog("cache full, skipping learn for %s", addr)
 		return
+	}
+
+	// Expired entries may still have route/PF state until the next sweep.
+	if exists && !old.Claimed && !ip.IsLinkLocalUnicast() && old.If != ifn {
+		c.rt.Delete(addr.String(), old.If)
+		c.pf.Delete(addr.String(), old.If)
 	}
 
 	// Insert or replace
